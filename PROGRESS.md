@@ -13,7 +13,7 @@
 - **M3 — Drop/variant domain + admin/reset plane:** ACCEPTED
 - **M4 — World ID v4 verify + per-drop dedupe (web):** ACCEPTED
 - **M5 — USDC settlement (viem, chain 4801):** ACCEPTED
-- M6 — Fair draw engine + winner purchase window: not started
+- **M6 — Fair draw engine + winner purchase window:** ACCEPTED
 - M7 — MCP server: info + entry tools (AgentKit auth): not started
 - M8 — MCP purchase tool + e2e agent settlement: not started
 - M9 — Web purchase UI + pop-brutalist design pass: not started
@@ -560,3 +560,124 @@ gas https://www.alchemy.com/faucets/world-chain-sepolia) or seed the win to agen
   Env on Railway now also has WORLD_CHAIN_SEPOLIA_RPC + DEMO_{AGENT1,AGENT2,HUMAN}_{PK,ADDRESS}.
   Redeploy: `railway up --ci --service 9f74a937… -m "<msg>"`. ⚠️ Avoid `0n` bigint literals
   (tsconfig target ES2017) — use `BigInt(0)`.
+
+---
+
+## 2026-06-13 — iter-005 — M6 Fair draw engine + winner → purchase window
+**Status of M6:** ACCEPTED
+
+**Did:** (same branch `build/m3-admin-plane`, continued after M5)
+- **`lib/draw.service.ts`** (plain TS): `runDraw(dropId, {windowSeconds?, force?})` — selects
+  `total_slots` winners from `pending` entries, marks them `won` (with a bounded
+  `purchase_deadline`) and the rest `lost`, stamps `drops.drawn_at`, and (if the drop was
+  `open`) flips it to `closed`. **Seedable RNG = deterministic:** if `drops.draw_seed` is set,
+  the per-entry rank key is `SHA-256(seed + ":" + entryId)` hex; sort ascending, take the first
+  N → the SAME seed + SAME entry set ALWAYS yields the SAME winner. No seed → `node:crypto`
+  `randomBytes(32)` per entry (independent draws). `purchaseForEntry({entryId, privateKey,
+  receiverAddress})` — real M5 USDC `price_usdc` transfer winner→receiver, then entry →
+  `purchased` + `orders.entry_id` linked. Guards: `NotAWinnerError` (lost/pending/expired),
+  `WindowExpiredError` (past deadline → marks `expired`), `AlreadyPurchasedError`,
+  `InsufficientFundsError` (from M5, → 402). `getDrawState(dropId)` groups entries by status.
+- **Schema (migration `0002_open_quasimodo.sql`, additive):** `drops.receiver_address` (merchant
+  paid by the winner; null → env `RECEIVER_ADDRESS`/agent1 default) + `drops.drawn_at`;
+  `entries.wallet_address` (which wallet a winning entry settles FROM) + `entries.purchase_deadline`.
+  Applied via `pnpm db:migrate`.
+- **`lib/wallets.ts`:** `getWalletByAddress(addr)` (maps a stored entry wallet_address back to its
+  keypair so the server signs without the key ever crossing the wire) + `getReceiverAddress()`
+  (env `RECEIVER_ADDRESS`/`MERCHANT_ADDRESS`, else agent1).
+- **`lib/drops.service.ts`:** added `setReceiver(dropId, addr|null)`; `insertDummyEntry` now takes
+  an optional `walletAddress` and RETURNS the new entry id (was void); `resetDrop` now also clears
+  `drawn_at`. **`lib/entries.service.ts`:** `insertWebEntry` accepts optional `walletAddress`.
+- **Routes:** admin `:id/:action` dispatch gained **`draw`** (`{windowSeconds?}` → winners/losers
+  + state) and **`set-receiver`** (`{receiverAddress}`); `dummy-entry` now accepts `walletAddress`
+  and returns `entryId`. New **`POST /api/drops/:id/purchase`** (`{entryId, wallet?}`): resolves the
+  signer server-side from the entry's `wallet_address` (or a `wallet` name), settles to the drop's
+  receiver. Status codes: 200 ok / 402 insufficient funds / 403 not-a-winner / 409 expired|already
+  / 404 not-found.
+- **`scripts/m6-acceptance.ts`** (self-cleaning throwaway drop): proves determinism (independent
+  SHA-256 prediction == runDraw winner, same across re-draws), winner count, real purchase, and
+  non-winner/double-purchase blocks.
+
+**Commit:** `52118fa`. Deployed: `railway up --ci --service 9f74a937…` → "Deploy complete";
+newest deployment **`55b516c3-5228-4942-8aa2-3b512598fcac` SUCCESS**.
+
+**Acceptance test (literal output):**
+- `pnpm exec tsx scripts/m6-acceptance.ts` → **M6_ACCEPTANCE: PASS (0 failures)**:
+  ```
+  OK   5 candidate entries seeded
+  OK   draw produced exactly total_slots (1) winner
+  OK   the other 4 entries are losers
+  OK   draw winner == independently-predicted seeded winner
+  OK   re-draw with same seed → SAME winner (true)
+  OK   winner entry status == 'won' / a non-winner entry status == 'lost'
+  OK   a LOST entry cannot purchase (NotAWinnerError)
+  OK   purchase tx hash valid · amount == 10 USDC · status 'purchased' · entry → 'purchased'
+  OK   orders row: entry_id linked · status confirmed · amount 10.000000 · to == receiver
+  OK   re-purchasing the same winner is rejected (AlreadyPurchasedError)
+  OK   throwaway drop deleted (cascade)
+  ```
+  Real tx (local run, human→agent1, 10 USDC, confirmed):
+  `0xcb7c55f3948ace7678c2b46696695e151ab844c6522298b40eac4dd35a6dd72a`
+  (https://sepolia.worldscan.org/tx/0xcb7c55f3948ace7678c2b46696695e151ab844c6522298b40eac4dd35a6dd72a)
+- **LIVE HTTP path** (full draw→purchase through the Railway app, throwaway drop created+deleted):
+  - seed 3 entries → `POST :id/draw` → 1 winner / 2 losers, drop → `closed`.
+  - loser `POST /api/drops/:id/purchase` → **403** `"... is 'lost', not a winner"`.
+  - winner (wallet=agent2, funded) `POST /api/drops/:id/purchase` → **HTTP 200**, real tx
+    `0xd2cee25f030e1a85cb91047d20f93dcc8f4608b9ec3e6486b2b2a66010de1a5a` (10 USDC agent2→human,
+    confirmed; orderId `68c770ed-…`), entry → `purchased`.
+  - re-purchase winner → **409** `"already purchased"`. `DELETE` throwaway drop → 200; GET → 404.
+  - (also proved the pre-flight: a winner mapped to a dry wallet → **402** with the faucet link.)
+  - Seeded demo drops survived: `GET /api/drops` → Mac Mini open (2 var), Mac Studio coming_soon (2 var).
+
+**Deviations from PRD:** none material.
+- Added `entries.wallet_address` so a winning entry knows which wallet settles for it (PRD left
+  the web entry→wallet mapping to "pick the simplest convincing path"; storing the address at
+  entry/seed time and resolving the key server-side via `getWalletByAddress` is that path — keys
+  never leave the server). Web `insertWebEntry` can pass a wallet (M9 will map the human demo wallet).
+- Added `drops.receiver_address` + `set-receiver` action (merchant target) and `drops.drawn_at`
+  (audit). The draw also auto-`closes` an `open` drop (lifecycle convenience; reset re-opens it).
+- Purchase window default = **600s** (`DEFAULT_PURCHASE_WINDOW_SECONDS`). A null deadline is
+  treated as "open" (demo safety). Expired → entry flips to `expired` then rejects.
+
+**⚠️ WALLET BALANCES NOW (post-M6 — important for M7/M8):** the two live M6 txs were a wash on the
+human wallet (−10 local acceptance, +10 live receiver), and agent2 −10 live. Re-check before M8 with
+`pnpm exec tsx scripts/check-balances.ts`. Rough state: **agent1 ~1 USDC (RECEIVER default — keep
+funded enough only if it must SEND), agent2 ~30 USDC, human ~19 USDC**; all ~0.009–0.01 ETH gas.
+For M8 the WINNING AGENT wallet must have ≥10 USDC + gas. Seed the win to a funded wallet (agent2)
+or refund: USDC https://faucet.circle.com (Worldchain Sepolia, ~20/2h), gas
+https://www.alchemy.com/faucets/world-chain-sepolia.
+
+**NOTES FOR NEXT ITERATION (start M7 — MCP server: info + entry tools, AgentKit auth):**
+- Stand up a remote MCP server with **`@modelcontextprotocol/sdk`** over **streamable-HTTP** so
+  Claude/ChatGPT can add it as a custom connector. Mount it as a Next route handler (e.g.
+  `app/api/mcp/route.ts`) — simplest given everything else is in this app — OR a sibling process;
+  record which. ⚠️ **Read `node_modules/next/dist/docs/` for route-handler specifics** (modified Next).
+- **AgentKit auth = Option A (native per-request signature), NOT a delegated bearer token (doesn't
+  exist).** On each privileged tool call expect the AgentKit x402-style signed CAIP-122 header →
+  `verifyAgentkitSignature()` to recover the wallet → `createAgentBookVerifier()` to resolve
+  wallet → anonymous `humanId` on World Chain. Reject unsigned calls with a **402 challenge**.
+  Optional Option-B cache: a `sessions` row (token→humanId, table already exists) — cache ONLY,
+  never the source of truth. **Confirm the exact AgentKit package name at install** (may have moved;
+  RALPH_GUIDE §6 says verify — record the real name + version in PROGRESS).
+- **Tools:** `list_drops`, `get_drop_info(drop_id)` (the coming-soon informational tool),
+  `enter_draw(drop_id, variant)` (insert entry with `human_key = humanId`, **`source='agent'`** —
+  reuse the `entries` funnel; add an `insertAgentEntry` to `lib/entries.service.ts` mirroring
+  `insertWebEntry` but keyed on humanId + set `entries.human_id`), `check_status(drop_id)`.
+- The per-drop **UNIQUE(drop_id, human_key)** must gate agent entries too (humanId is the key).
+  Cross-surface caveat: World ID nullifier (web) and AgentBook humanId (agent) are different
+  namespaces → dedupe holds WITHIN each surface; document the honest caveat (PRD M7 step 4).
+- **M6 building blocks to reuse for M8:** `runDraw` is seedable (`drops.draw_seed`, set via
+  `/api/admin/drops/:id/seed`), force via `/api/admin/drops/:id/draw`; the agent purchase tool
+  (M8) calls **`purchaseForEntry`** from `lib/draw.service.ts` with the AGENT's wallet. Set the
+  entry's `wallet_address` to the agent wallet at `enter_draw` time so purchase resolves the signer
+  (or pass it explicitly). Receiver via drop `receiver_address` / `set-receiver` / env default.
+- Reusable IDs unchanged: app service `9f74a937-4034-4767-8fd0-67115833c31d`, Postgres
+  `5a9197a2-96c1-44d2-9305-dbbb3204cbc1`, live `https://worldcoinapp-production.up.railway.app`,
+  ADMIN_SECRET + WORLD_* + DEMO_* + WORLD_CHAIN_SEPOLIA_RPC in `.env`+Railway. Demo drops seeded
+  live with `world_action_id`. Redeploy: `railway up --ci --service 9f74a937… -m "<msg>"`.
+- ⚠️ Carryover gotchas: Next 16 route `params` is a Promise (`await ctx.params`); `@/lib/db` is a
+  lazy proxy; build must pass `env -u DATABASE_URL pnpm build`; Drizzle unique errors live on
+  `err.cause.code`; tsconfig target ES2017 → use `BigInt(0)` not `0n`; Railway Metal builder
+  rejects `# syntax=` / BuildKit cache mounts in the Dockerfile.
+- ⚠️ Still on branch `build/m3-admin-plane` (nothing merged to main). Fine to continue or branch
+  `build/m7-mcp` off it.
