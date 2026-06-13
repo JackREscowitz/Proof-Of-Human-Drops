@@ -15,7 +15,7 @@
 - **M5 — USDC settlement (viem, chain 4801):** ACCEPTED
 - **M6 — Fair draw engine + winner purchase window:** ACCEPTED
 - **M7 — MCP server: info + entry tools (AgentKit auth):** ACCEPTED
-- M8 — MCP purchase tool + e2e agent settlement: not started
+- **M8 — MCP purchase tool + e2e agent settlement:** ACCEPTED
 - M9 — Web purchase UI + pop-brutalist design pass: not started
 - M10 — Demo hardening + reset choreography + dry run: not started
 
@@ -811,3 +811,117 @@ M7_ACCEPTANCE: PASS (0 failures)
   on `err.cause.code`; tsconfig ES2017 → `BigInt(0)` not `0n`; Railway Metal builder rejects
   `# syntax=` / BuildKit cache mounts; **tsx scripts need an async `main()` — top-level await fails
   esbuild's CJS transform.** Still on branch `build/m3-admin-plane` (nothing merged to main).
+
+---
+
+## 2026-06-13 — iter-006 (cont.) — M8 MCP purchase tool + end-to-end agent settlement
+**Status of M8:** ACCEPTED
+
+**Did:** (same branch `build/m3-admin-plane`, continued after M7)
+- **Added a privileged `purchase(drop_id)` MCP tool** to `app/api/mcp/route.ts`:
+  1) AgentKit per-request auth → verified wallet + humanId (reuses M7 `authenticateAgent`),
+  2) `findEntryByHumanKey(drop_id, identity.humanId)` → THIS human's entry,
+  3) resolve the signer **server-side** from the entry's stored `wallet_address` (set at
+     `enter_draw` time = the agent's verified wallet) via `getWalletByAddress` — keys never cross
+     the wire; falls back to the freshly-verified caller wallet,
+  4) **defense in depth:** the verified caller wallet must OWN the entry's wallet (a signature from
+     a different wallet can't drive someone else's purchase),
+  5) `purchaseForEntry` (M6→M5): real USDC `price_usdc` transfer winner→receiver on chain 4801,
+     entry → `purchased`, `orders` row linked. Returns tx hash + `explorer_url`.
+  Rejects: not-a-winner (`NotAWinnerError`), expired window, already-purchased, insufficient funds
+  — each as a tool `isError` with a clear message. Imports added: `purchaseForEntry` + error classes
+  from `draw.service`, `getWalletByAddress`/`getReceiverAddress` from `wallets`, `InsufficientFundsError`.
+- **`scripts/m8-acceptance.ts`** — full MCP-ONLY agent journey on **throwaway drops** (created +
+  deleted via admin, so the seeded demo state is untouched):
+  - **Drop A (win+buy):** agent2 is the SOLE entrant → guaranteed deterministic winner. Proves:
+    pre-draw purchase rejected (pending), force-draw → 1 winner, check_status → 'won', **purchase →
+    real on-chain tx**, amount 10 USDC, settled FROM agent2's wallet, entry → 'purchased',
+    re-purchase rejected.
+  - **Drop B (non-winner):** agent2 + the HUMAN demo wallet both enter (two KNOWN/resolvable
+    wallets so the loser hits the REAL 'not a winner' guard, not an "unknown wallet" guard);
+    force-draw → 1 winner/1 loser; the loser's purchase is rejected with 'not a winner'. (The loser
+    is never charged — rejection precedes any transfer.)
+  ‼️ **Fix made mid-iteration:** first run used an unfunded throwaway anvil key as the loser, which
+  tripped the "no known demo wallet maps to …" guard *before* the not-a-winner check — semantically
+  wrong rejection reason. Switched the second entrant to `DEMO_HUMAN_PK` (a registered demo wallet)
+  so the genuine not-a-winner path is exercised. Both reject the purchase (no funds move), but the
+  message now correctly says "not a winner".
+
+**Commit:** `c86cd26` (M8 purchase tool + acceptance). Deployed: `railway up --ci --service 9f74a937…`
+→ "Deploy complete"; newest deployment **`afbb9519-0e9c-4a5e-b61d-7a86d3046688` SUCCESS**.
+
+**Acceptance test (literal output — run against the LIVE Railway URL):**
+```
+MCP_URL = https://worldcoinapp-production.up.railway.app/api/mcp
+agent2 (winner/payer) = 0xE56F3bA6A66A51c0783069390278e14bdB5A1389
+second entrant        = 0x14BAf4Ab5D7324bfdD9De78d5d7c0BF63F639781
+OK   [A] agent2 enter_draw → entered (wallet 0xE56F3bA6A66A51c0783069390278e14bdB5A1389)
+OK   [A] entry stored agent2's verified wallet (settles from it)
+OK   [A] purchase before draw → rejected (entry is 'pending', not a winner)
+OK   [A] force-draw → exactly 1 winner
+OK   [A] check_status → 'won'
+OK   [A] purchase → success
+OK   [A] valid 32-byte tx hash: 0x4fd61725be7641366d35909ef4e73f912c59baf2911460d6bdf51532e4f45af1
+OK   [A] amount == 10 USDC
+OK   [A] settled FROM agent2's wallet
+OK   [A] entry → 'purchased'
+OK   [A] re-purchase → rejected (already purchased)
+OK   [B] two distinct agents entered
+OK   [B] force-draw → 1 winner, 1 loser
+OK   [B] identified the loser (human) — status 'lost'
+OK   [B] loser purchase → rejected ('not a winner')
+OK   cleanup: throwaway drops deleted
+M8_ACCEPTANCE: PASS (0 failures)
+```
+- **On-chain receipt VERIFIED:** tx `0x4fd61725be7641366d35909ef4e73f912c59baf2911460d6bdf51532e4f45af1`
+  → `status: success`, block **30423266**, `from` agent2 `0xe56f3ba6…`, `to` USDC contract
+  `0x66145f38…` (ERC-20 transfer). Explorer:
+  https://sepolia.worldscan.org/tx/0x4fd61725be7641366d35909ef4e73f912c59baf2911460d6bdf51532e4f45af1
+  (Also PASS locally before deploy: real tx `0x92b5a9734d7af4799be16715d63576682e25b26327b3e857b40c913eb8a5c63d`.)
+- This is the **second real settlement tx** (M5 was the first) and the **first AGENT-path** one —
+  satisfies the Definition-of-Done "≥2 real txs (one web, one agent)" agent half.
+
+**Deviations from PRD:**
+- Used throwaway drops (not the seeded Mac Mini) for the e2e so the demo state stays pristine and the
+  test is self-cleaning/reproducible — the PRD's "reproducible after an admin reset" intent, met by
+  create+delete rather than reset. (M10 will wire the full Mac-Mini reset choreography.)
+- AgentBook registration step (PRD M8 step 2) is the same World-App-gated flow noted in M7 — the
+  demo wallets aren't AgentBook-registered, so the agent identity uses the wallet-scoped fallback
+  humanId. The SIGNATURE (the real auth primitive) IS enforced, and the agent settles from ITS OWN
+  verified wallet. Honest caveat already documented in M7.
+
+**⚠️ WALLET BALANCES NOW (post-M8 — important for M9/M10):** agent2 sent 10 USDC in EACH of the local
++ live acceptance runs (2× 10 = 20 USDC out, both to the default receiver = agent1). Rough state:
+agent2 ~30 USDC, agent1 (RECEIVER) ~51 USDC, human ~39 USDC; all still ~0.0099 ETH gas. Re-check before
+M9/M10 with `pnpm exec tsx scripts/check-balances.ts`. **For M9 the WEB winner pays from the `human`
+demo wallet** (map web entries → human) — keep it funded (≥10 USDC + gas). Faucets: USDC
+https://faucet.circle.com (Worldchain Sepolia ~20/2h), gas https://www.alchemy.com/faucets/world-chain-sepolia.
+
+**NOTES FOR NEXT ITERATION (start M9 — Web purchase UI + pop-brutalist design pass):**
+- **STUDY `webinspo/` FIRST** (image.png Sui Overflow, image2.png Seal, image3.png Gumroad, image4.png
+  Balenciaga) + RALPH_GUIDE §11 before touching UI. Pop-brutalist: bold oversized display type, hard
+  edges, thick (2px+) black borders, blocky cards w/ hard/offset shadows, ONE canvas (cream OR black),
+  ONE electric accent (acid/lime green). Editorial drop-campaign layout, small grid of featured cards.
+  Define theme tokens (font/accent/border/shadow) globally in Tailwind so `/admin` matches too.
+- **Web winner flow:** a `won` web entry shows a "YOU WON — PURCHASE" CTA → settle. Simplest convincing
+  path: **server-side settle from the `human` demo wallet** (mirror the agent path; the web entry's
+  `wallet_address` is already supported by `insertWebEntry` — set it to the human wallet at entry time).
+  Reuse `POST /api/drops/:id/purchase` (M6, already live) OR call `purchaseForEntry`. The money path is
+  100% proven (M5/M6/M8) — M9 is mostly UI + wiring the human wallet to web entries.
+- **Existing UI to restyle:** landing `app/page.tsx` (lists drops as cards), `app/drops/[id]/page.tsx`
+  (entry page: variant chips + fairness count), `components/drop-entry-panel.tsx`,
+  `components/world-id-entry.tsx` (IDKit v4 flow), `app/admin/page.tsx`. Add the winner/purchase states
+  + a bold **"fairness" stat block** (total unique humans entered, duplicates blocked) — the visible
+  Sybil proof for judges. shadcn/ui + Tailwind v4 already installed; `components/ui/button.tsx` exists.
+- **Cross-surface check (M9 step 5):** web + agent entries to the same drop both honor uniqueness and
+  both show in the admin/operator view (agent entries have `source='agent'`, web `source='web'`).
+- **Capture a landing-page SCREENSHOT into PROGRESS.md at M9** as proof it matches the direction.
+- Reusable IDs unchanged: app service `9f74a937-4034-4767-8fd0-67115833c31d`, Postgres
+  `5a9197a2-96c1-44d2-9305-dbbb3204cbc1`, live `https://worldcoinapp-production.up.railway.app`, MCP at
+  `…/api/mcp`. Mac Mini `c27f512e-…` (open), Mac Studio `aafd0d75-…` (coming_soon), both seeded live with
+  variants + `world_action_id`. ADMIN_SECRET + WORLD_* + DEMO_* + WORLD_CHAIN_SEPOLIA_RPC on Railway.
+  Redeploy: `railway up --ci --service 9f74a937… -m "<msg>"`.
+- ⚠️ Carryover gotchas unchanged (Next 16 `await ctx.params`; lazy `@/lib/db`; `env -u DATABASE_URL
+  pnpm build`; Drizzle errors on `err.cause.code`; ES2017 → `BigInt(0)`; Railway Metal builder Dockerfile
+  limits; tsx scripts need async `main()`). Still on branch `build/m3-admin-plane`.
+
