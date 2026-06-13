@@ -1,11 +1,13 @@
-// POST /api/admin/drops/:id/:action — per-drop lifecycle ops. Auth-gated (M3).
-// Actions: open | close | settle | reset | flip | seed | add-variant | dummy-entry
+// POST /api/admin/drops/:id/:action — per-drop lifecycle ops. Auth-gated (M3/M6).
+// Actions: open | close | settle | reset | flip | seed | add-variant | dummy-entry | draw
 //   - open/close/settle: status transitions (coming_soon→open→closed→settled).
 //   - reset: truncate entries+orders for this drop, re-open, reset countdown.
 //   - flip: coming_soon ↔ open (the second-item reveal).
 //   - seed: set/clear the RNG seed ({ seed: string|null }).
 //   - add-variant: { name, sku?, stock? }.
-//   - dummy-entry: { humanKey, variantId? } — for the reset acceptance test / dev seeding.
+//   - dummy-entry: { humanKey, variantId?, walletAddress? } — reset/draw tests + dev seeding.
+//   - draw (M6): force the fair draw now — pick winners from pending entries, open the
+//     purchase window. Optional { windowSeconds }. Returns winner/loser entry ids.
 import { NextRequest } from "next/server";
 import { isAuthorized, unauthorized } from "@/lib/admin-auth";
 import {
@@ -13,12 +15,14 @@ import {
   resetDrop,
   flipComingSoon,
   setSeed,
+  setReceiver,
   addVariant,
   insertDummyEntry,
   getDropWithVariants,
   NotFoundError,
   InvalidTransitionError,
 } from "@/lib/drops.service";
+import { runDraw, getDrawState } from "@/lib/draw.service";
 
 export const dynamic = "force-dynamic";
 
@@ -62,6 +66,15 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         const seed = body.seed === null ? null : String(body.seed ?? "");
         return Response.json({ ok: true, drop: await setSeed(id, seed || null) });
       }
+      case "set-receiver": {
+        const body = await readBody(req);
+        const receiver =
+          body.receiverAddress === null ? null : String(body.receiverAddress ?? "");
+        return Response.json({
+          ok: true,
+          drop: await setReceiver(id, receiver || null),
+        });
+      }
       case "add-variant": {
         const body = await readBody(req);
         if (!body.name) return Response.json({ error: "name required" }, { status: 400 });
@@ -76,13 +89,22 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         const body = await readBody(req);
         if (!body.humanKey)
           return Response.json({ error: "humanKey required" }, { status: 400 });
-        await insertDummyEntry(
+        const entryId = await insertDummyEntry(
           id,
           String(body.humanKey),
           body.variantId ? String(body.variantId) : null,
+          body.walletAddress ? String(body.walletAddress) : null,
         );
         const drop = await getDropWithVariants(id);
-        return Response.json({ ok: true, drop }, { status: 201 });
+        return Response.json({ ok: true, entryId, drop }, { status: 201 });
+      }
+      case "draw": {
+        const body = await readBody(req);
+        const windowSeconds =
+          typeof body.windowSeconds === "number" ? body.windowSeconds : undefined;
+        const result = await runDraw(id, { windowSeconds });
+        const state = await getDrawState(id);
+        return Response.json({ ok: true, draw: result, state });
       }
       default:
         return Response.json({ error: `unknown action: ${action}` }, { status: 404 });

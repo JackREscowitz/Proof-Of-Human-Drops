@@ -59,6 +59,11 @@ export const drops = pgTable("drops", {
   drawSeed: text("draw_seed"),
   // The World ID v4 action id created for this drop (M4). One action per drop.
   worldActionId: text("world_action_id"),
+  // The merchant wallet a winner's USDC purchase is paid TO (M6). Null = use the
+  // RECEIVER_ADDRESS / merchant default. Settlement is winner-wallet → this address.
+  receiverAddress: text("receiver_address"),
+  // When the most recent draw ran (M6). Null = not yet drawn.
+  drawnAt: timestamp("drawn_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -90,6 +95,11 @@ export const entries = pgTable(
     humanId: text("human_id"),
     verificationLvl: verificationLvl("verification_lvl"),
     status: entryStatus("status").notNull().default("pending"),
+    // The wallet this entry settles FROM if it wins (M6). Web entries map to the human
+    // demo wallet; agent entries to the agent's registered wallet. Null until known.
+    walletAddress: text("wallet_address"),
+    // When a `won` entry's purchase window closes (M6). Past this → expired (no purchase).
+    purchaseDeadline: timestamp("purchase_deadline", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

@@ -44,3 +44,29 @@ export function getWallet(name: string): WalletEntry {
 export function listWalletNames(): WalletName[] {
   return (Object.keys(REGISTRY) as WalletName[]).filter((n) => read(REGISTRY[n].pk));
 }
+
+// Resolve a wallet by its on-chain address (case-insensitive). Used by M6 purchase: a winning
+// entry stores its `wallet_address`; we map that back to the keypair to sign the settlement.
+// The keys never leave the server — only addresses are stored on entries.
+export function getWalletByAddress(address: string): WalletEntry | undefined {
+  let target: string;
+  try {
+    target = getAddress(address);
+  } catch {
+    return undefined;
+  }
+  for (const name of listWalletNames()) {
+    const w = getWallet(name);
+    if (getAddress(w.address) === target) return w;
+  }
+  return undefined;
+}
+
+// The merchant/receiver a winner pays. Configurable via env; defaults to the agent1 demo
+// wallet's address so the demo money flows winner → merchant on testnet.
+export function getReceiverAddress(): string {
+  const explicit = read("RECEIVER_ADDRESS") || read("MERCHANT_ADDRESS");
+  if (explicit) return getAddress(explicit);
+  // Fallback: the agent1 demo wallet address.
+  return getWallet("agent1").address;
+}

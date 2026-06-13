@@ -38,6 +38,9 @@ export interface InsertWebEntryInput {
   nullifier: string; // verified World ID v4 nullifier (hex)
   variantId?: string | null;
   verificationLvl?: "orb" | "device" | null;
+  // The wallet this entry settles FROM if it wins (M6). For the demo, a web human maps to a
+  // demo wallet (e.g. the "human" wallet). Stored so the winner can pay without re-prompting.
+  walletAddress?: string | null;
 }
 
 // Insert a WEB entry keyed by the World ID nullifier. Returns the new row on success;
@@ -53,6 +56,7 @@ export async function insertWebEntry(input: InsertWebEntryInput): Promise<Entry>
         nullifierHash: hexToDecimalString(input.nullifier),
         verificationLvl: input.verificationLvl ?? null,
         variantId: input.variantId ?? null,
+        walletAddress: input.walletAddress ?? null,
       })
       .returning();
     return row;

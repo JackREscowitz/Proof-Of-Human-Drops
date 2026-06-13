@@ -15,6 +15,13 @@
       "when": 1781391965817,
       "tag": "0001_gorgeous_the_hand",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1781392612180,
+      "tag": "0002_open_quasimodo",
+      "breakpoints": true
     }
   ]
 }

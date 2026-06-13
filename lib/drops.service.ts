@@ -153,6 +153,21 @@ export async function setSeed(dropId: string, seed: string | null): Promise<Drop
   return row;
 }
 
+// Set the merchant/receiver wallet a winner's purchase is paid to (M6). Null = fall back to
+// the RECEIVER_ADDRESS env / agent1 default at purchase time.
+export async function setReceiver(
+  dropId: string,
+  receiverAddress: string | null,
+): Promise<Drop> {
+  await getDropOrThrow(dropId);
+  const [row] = await db
+    .update(drops)
+    .set({ receiverAddress })
+    .where(eq(drops.id, dropId))
+    .returning();
+  return row;
+}
+
 // Demo reset: truncate entries + orders for THIS drop only, re-open it, reset the countdown.
 // Scoped to one drop so the seeded products and other drops survive (RALPH_GUIDE.md §8).
 export interface ResetOptions {
@@ -180,7 +195,7 @@ export async function resetDrop(
     }
     await tx.delete(entries).where(eq(entries.dropId, dropId));
 
-    const patch: Partial<typeof drops.$inferInsert> = {};
+    const patch: Partial<typeof drops.$inferInsert> = { drawnAt: null };
     if (reopen) patch.status = "open";
     if (opts.countdownSeconds === null) {
       patch.closesAt = null;
@@ -210,18 +225,25 @@ export async function flipComingSoon(dropId: string): Promise<Drop> {
   );
 }
 
-// Insert a dummy entry — used by the M3 acceptance test (reset proof) and dev seeding.
+// Insert a dummy entry — used by the M3/M6 acceptance tests (reset + draw proofs) and dev
+// seeding. Returns the new entry id so callers (e.g. the M6 draw test) can reference it.
 export async function insertDummyEntry(
   dropId: string,
   humanKey: string,
   variantId?: string | null,
-): Promise<void> {
-  await db.insert(entries).values({
-    dropId,
-    humanKey,
-    source: "web",
-    variantId: variantId ?? null,
-  });
+  walletAddress?: string | null,
+): Promise<string> {
+  const [row] = await db
+    .insert(entries)
+    .values({
+      dropId,
+      humanKey,
+      source: "web",
+      variantId: variantId ?? null,
+      walletAddress: walletAddress ?? null,
+    })
+    .returning({ id: entries.id });
+  return row.id;
 }
 
 export async function countEntries(dropId: string): Promise<number> {
