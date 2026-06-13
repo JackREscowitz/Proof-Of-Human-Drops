@@ -92,6 +92,10 @@ DO THIS, IN ORDER:
    iteration — keep going across sub-steps; only stop when the work is genuinely done for
    now or you're out of room. You are in a VM with --dangerously-skip-permissions: you may
    freely clear the DB, deploy to Railway, spend testnet tokens, run any command.
+   For ANY Railway operation (login, deploy, provisioning Postgres, variables, domains,
+   status), invoke the `use-railway` skill instead of guessing CLI flags — it carries the
+   correct commands, deploy-success polling, and DATABASE_URL wiring. The CLI is already
+   installed and authenticated.
 4. COMMIT after each milestone or sub-milestone (feature branch build/m<N>-<slug>, never
    straight to main). Use clear messages. Each meaningful unit of work = its own commit.
 5. Append to PROGRESS.md before you finish: a dated entry stamping the milestone id (e.g.

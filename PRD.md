@@ -20,8 +20,9 @@ The research report (`RESEARCH_REPORT.md`) was written before resources were pro
 | **RPC** | `https://worldchain-sepolia.g.alchemy.com/public` | Public Alchemy endpoint (no key) — fine for the demo |
 | **Explorer** | `https://sepolia.worldscan.org` | For tx-hash links in the demo |
 | **USDC (testnet)** | `0x66145f38cBAC35Ca6F1Dfb4914dF98F1614aeA88` | **Bridged USDC.e**, 6 decimals. `$10 = 10000000` raw |
-| **DB** | DigitalOcean managed Postgres, `sslmode=require` | Creds in `secret_keys` (host/port/user/pass/db) |
-| **Toolchain present** | Node v22.20, pnpm 10.18, npm 11.6, Docker 28.4 | **No `railway` CLI yet** — loop installs it in M1 |
+| **Railway project** | **`worldcoin_app`** — id `c3751ac9-2806-4e9e-83d7-30504b6a059f`, env `production` (`928cd32e-b60e-43b3-86f7-2c7bbcb9476d`) | **Already exists — M1 LINKS to it, never creates a new project.** No services yet (M1 adds the app service, M2 adds Postgres). Workspace "Carson Weeks's Projects" |
+| **DB** | Railway Postgres (provisioned in the project above via `railway add --database postgres`) | Railway injects `DATABASE_URL` as a service variable; pull it with `railway variables`. Use the private-network URL inside Railway and the public proxy URL for local runs |
+| **Toolchain present** | Node v22.20, pnpm 10.18, npm 11.6, Docker 28.4 | Railway CLI **installed (5.12.1) and authenticated** as `carson@taho.is`. **All** Railway operations go through the CLI via the `use-railway` skill (deploy, DB provisioning, variables, domains, status) |
 | **Wallets** | 1 agent wallet in `secret_keys`; 3 demo wallets (Agent 1, Agent 2, Human) in `demo_wallets.md` | All testnet. Fund per `demo_wallets.md` checklist |
 
 **Two architecture decisions locked for the build (from the report's open questions):**
@@ -45,7 +46,7 @@ A drops storefront where scarce stock (a Mac Mini, instant-sellout) is allocated
 - **Verification steps** are things you run to confirm wiring (commands, curls). **Acceptance Test** is the single objective pass/fail gate for the milestone.
 - Record progress in `PROGRESS.md` (create it in M0). After each milestone, append a dated entry: what was built, the acceptance-test output, and any deviations. **This is the loop's memory across runs** — read it at the start of every run.
 - If a milestone is blocked by something the loop genuinely cannot do (e.g. a faucet rate-limit, a human-only OAuth click), write the blocker to `PROGRESS.md` under a `## BLOCKED` heading with the exact action needed, and move to any *independent* sub-task; do not spin.
-- **You may freely:** clear/reset the database (drop & recreate tables, wipe rows), deploy to Railway, and spend the testnet USDC/ETH in the demo wallets — the user has authorized all of this. **The one thing to avoid is destroying the *provisioning* itself**: don't delete the Railway project/service, the DigitalOcean database instance, or the World app/RP (those are slow to recreate and may need human re-auth). Tables and data inside the DB are fair game. See `RALPH_GUIDE.md` §"Hard constraints".
+- **You may freely:** clear/reset the database (drop & recreate tables, wipe rows), deploy to Railway, and spend the testnet USDC/ETH in the demo wallets — the user has authorized all of this. **The one thing to avoid is destroying the *provisioning* itself**: don't delete the Railway project/service, the Railway Postgres database service, or the World app/RP (those are slow to recreate and may need human re-auth). Tables and data inside the DB are fair game. See `RALPH_GUIDE.md` §"Hard constraints".
 - Keep secrets out of git. `secret_keys`, `demo_wallets.md`, `.env*` are gitignored — keep it that way.
 
 ---
@@ -88,59 +89,65 @@ Each milestone is sized to be completable and verifiable in one or a few loop it
 **Depends on:** M0.
 **Goal:** Prove we can deploy this repo to Railway as a Dockerfile and reach the live health endpoint. **Deploy is allowed; deleting existing resources is not.**
 
+**All Railway operations in this project go through the `railway` CLI** (install, auth, link, deploy, DB provisioning, variables, domains, status). Prefer `--json` output for parsing. Do not use the dashboard or raw API except where the CLI genuinely can't do it.
+
 **Build steps**
-1. Install Railway CLI (`npm i -g @railway/cli` or the official install script). Authenticate (the loop may need the user to complete an OAuth/browser step — if so, write the exact instruction to `PROGRESS.md` `## BLOCKED` and pause this milestone).
+1. The Railway CLI is **already installed (5.12.1) and authenticated** (`carson@taho.is`). Confirm with `railway whoami --json`. If for some reason it's missing/logged-out, install via `npm i -g @railway/cli` and run `railway login`; if a sign-in link prints and can't be completed, relay it and write `PROGRESS.md` `## BLOCKED`, then pause.
 2. Write a multi-stage `Dockerfile` for Next standalone: build stage (`pnpm install --frozen-lockfile`, `pnpm build`), runtime stage copying `.next/standalone`, `.next/static`, `public`; `CMD ["node","server.js"]`; expose `3000`; respect `PORT`.
 3. Add `.dockerignore` (node_modules, .next, .git, secret files).
-4. Create (or reuse, if one already exists — **check first, never recreate**) a Railway **project** and **service** for this repo. Link with `railway link`.
-5. Set the service to build from the Dockerfile. Deploy with `railway up`.
-6. Generate/confirm the public domain.
+4. **Link to the existing project** `worldcoin_app` — **do NOT create a new one**: `railway link --project c3751ac9-2806-4e9e-83d7-30504b6a059f --environment production`. It currently has no services; add the app service for this repo (`railway add --service <name> --json`) or let `railway up` create it. (Verify with `railway status --json` / `railway service list --json` first.)
+5. Set the service to build from the Dockerfile. Deploy with `railway up` (use `railway up --detach` for scripted runs, then poll `railway deployment list --json` until the newest deployment is `SUCCESS` — never report a deploy done before observing terminal `SUCCESS`).
+6. Generate/confirm the public domain with `railway domain`.
 
 **Verification steps**
-- `railway whoami` succeeds.
-- `railway status` shows the linked project/service.
+- `railway whoami --json` succeeds.
+- `railway status --json` shows the linked project/service.
 - `docker build .` succeeds locally (catch image errors before pushing).
+- `railway deployment list --json` shows the newest deployment `SUCCESS`.
 - After deploy: `curl -s https://<railway-domain>/api/health` → `{"ok":true}`.
 
 **Acceptance Test**
 - The Railway-hosted URL returns `{"ok":true}` from `/api/health`.
 
 **Exit Criteria**
-- [ ] Railway project + service linked (IDs recorded in `PROGRESS.md`).
-- [ ] Live Railway URL serves the health endpoint.
+- [ ] Railway project + service linked via `railway link` (IDs recorded in `PROGRESS.md`).
+- [ ] Live Railway URL serves the health endpoint (deploy confirmed `SUCCESS` via `railway deployment list`).
 - [ ] Dockerfile + .dockerignore committed.
 - [ ] No pre-existing Railway resources were deleted (additive only).
 
 ---
 
-### M2 — Database, schema, and migrations (Drizzle + DO Postgres)
+### M2 — Database, schema, and migrations (Drizzle + Railway Postgres)
 **Depends on:** M1.
-**Goal:** All tables from the data model live in DigitalOcean Postgres via Drizzle migrations, reachable from both local and Railway.
+**Goal:** All tables from the data model live in Railway Postgres via Drizzle migrations, reachable from both local and the Railway app service.
 
 **Build steps**
-1. Add `drizzle-orm`, `drizzle-kit`, and a Postgres driver (`postgres` / `pg`). Configure SSL (`sslmode=require`) — DO requires it.
-2. Compose `DATABASE_URL` from `secret_keys` creds (host, port 25060, user `doadmin`, the password, db `defaultdb`, `?sslmode=require`). Put it in `.env` locally and as a Railway variable. **Never commit it.**
-3. Implement the schema from `RESEARCH_REPORT.md` §4: `drops`, `variants`, `entries`, `agents`, `sessions`, `orders`. Critical constraints:
+1. Provision a Railway Postgres database in the project with the CLI: `railway add --database postgres --json` (check `railway service list --json` first — **never recreate** if one already exists). Record the DB service name/ID in `PROGRESS.md`.
+2. Add `drizzle-orm`, `drizzle-kit`, and a Postgres driver (`postgres` / `pg`). Railway Postgres provides `DATABASE_URL` automatically as a service variable — no manual host/port/user assembly and no `sslmode=require` ceremony.
+3. Wire `DATABASE_URL` in both contexts:
+   - **App service (on Railway):** reference the DB's private-network URL. Railway exposes it as `DATABASE_URL`; if the app and DB are separate services, set it as a reference variable on the app service (`railway variables --set 'DATABASE_URL=${{Postgres.DATABASE_URL}}'`) so traffic stays on the private network.
+   - **Local dev:** pull the public proxy connection string with `railway variables --json` (the `DATABASE_PUBLIC_URL`) into `.env`. **Never commit it** — `.env*` stays gitignored.
+4. Implement the schema from `RESEARCH_REPORT.md` §4: `drops`, `variants`, `entries`, `agents`, `sessions`, `orders`. Critical constraints:
    - `entries`: `UNIQUE (drop_id, human_key)` — **the Sybil guarantee**.
    - `nullifier_hash` stored as `NUMERIC(78,0)` (or text) — exceeds bigint.
    - `price_usdc` / `amount_usdc` as `NUMERIC(20,6)`.
    - status enums per the report.
-4. Generate and apply migrations (`drizzle-kit generate` + a migrate runner). Add `db:generate`, `db:migrate`, `db:studio` scripts.
-5. Add `/api/health/db` that does `SELECT 1` and returns `{ db: "ok" }`.
+5. Generate and apply migrations (`drizzle-kit generate` + a migrate runner). Add `db:generate`, `db:migrate`, `db:studio` scripts. Run migrations against Railway either locally via the public URL or with `railway run pnpm db:migrate` (injects the service `DATABASE_URL`).
+6. Add `/api/health/db` that does `SELECT 1` and returns `{ db: "ok" }`.
 
 **Verification steps**
-- `pnpm db:migrate` applies cleanly against DO Postgres.
+- `pnpm db:migrate` (or `railway run pnpm db:migrate`) applies cleanly against Railway Postgres.
 - Connect (psql or drizzle studio) and confirm all 6 tables + the `UNIQUE(drop_id, human_key)` index exist.
 - `curl localhost:3000/api/health/db` → `{"db":"ok"}`.
-- After redeploy, the Railway URL's `/api/health/db` also returns ok (proves Railway→DO connectivity + SSL).
+- After redeploy, the Railway URL's `/api/health/db` also returns ok (proves the app service reaches Railway Postgres over the private network).
 
 **Acceptance Test**
 - Inserting two rows into `entries` with the same `(drop_id, human_key)` **fails** with a unique-constraint violation; with different `human_key` it **succeeds**. (Write this as a throwaway script or a test.)
 
 **Exit Criteria**
-- [ ] All 6 tables migrated to DO Postgres.
+- [ ] All 6 tables migrated to Railway Postgres.
 - [ ] `UNIQUE(drop_id, human_key)` enforced (proven by the acceptance test).
-- [ ] Both local and Railway reach the DB (`/api/health/db` green in both).
+- [ ] Both local and the Railway app service reach the DB (`/api/health/db` green in both).
 
 ---
 

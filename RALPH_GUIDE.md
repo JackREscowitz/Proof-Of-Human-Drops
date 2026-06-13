@@ -29,7 +29,7 @@ You are run by `ralph.sh`, which spawns a **fresh** `claude` session each iterat
 
 **You have broad freedom** (the user explicitly authorized it): clear/reset the database, drop & recreate tables, wipe rows, deploy to Railway, and spend the testnet USDC/ETH in the demo wallets. Do whatever the build needs. The constraints below are the few real guardrails.
 
-- **Don't destroy the *provisioning* itself.** The DB *data and tables* are fair game (clear them freely), but **do not delete the cloud resource instances**: the Railway project/service, the DigitalOcean Postgres *instance*, or the World app/RP. Those are slow to recreate and may require human re-auth. Deleting rows/tables = fine; deleting the database server or Railway service = not fine. If you truly think the instance itself must be recreated, write it to `## BLOCKED` and ask.
+- **Don't destroy the *provisioning* itself.** The DB *data and tables* are fair game (clear them freely), but **do not delete the cloud resource instances**: the Railway project/service, the Railway Postgres *database service*, or the World app/RP. Those are slow to recreate and may require human re-auth. Deleting rows/tables = fine; deleting the Postgres service or the Railway app service = not fine. If you truly think the instance itself must be recreated, write it to `## BLOCKED` and ask.
 - **Deploying to Railway is ALLOWED and expected.** Reuse the existing project/service if one exists; otherwise create one. Don't delete a pre-existing one.
 - **Secrets never enter git.** `secret_keys`, `demo_wallets.md`, `.env`, `.env.*`, `*.key` are gitignored. Keep them that way. Never paste a private key or DB password into a committed file, a commit message, or `PROGRESS.md`. Reference them by name, not value.
 - **Testnet only.** Spend the testnet tokens freely, but never send **mainnet** funds to the demo wallets. Chain is World Chain **Sepolia (4801)**, never mainnet (480).
@@ -45,7 +45,7 @@ You are run by `ralph.sh`, which spawns a **fresh** `claude` session each iterat
 The user has placed two gitignored resource files in the repo root. **You may read and use them whenever you need them.**
 
 ### `secret_keys` (env values)
-Contains: `WORLD_APP_ID`, `WORLD_APP_RP_ID`, `WORLD_APP_SIGNER_KEY`, `WORLD_MCP_API_KEY`, `WORLD_CHAIN_SEPOLIA_RPC`, the DigitalOcean Postgres connection parts (username/password/host/port/database/sslmode), and the primary **Agent Wallet** private key + address. Load these into `.env` locally and into Railway variables. Compose `DATABASE_URL` from the DB parts with `?sslmode=require`.
+Contains: `WORLD_APP_ID`, `WORLD_APP_RP_ID`, `WORLD_APP_SIGNER_KEY`, `WORLD_MCP_API_KEY`, `WORLD_CHAIN_SEPOLIA_RPC`, and the primary **Agent Wallet** private key + address. Load these into `.env` locally and into Railway variables. **`DATABASE_URL` is NOT here** — it comes from Railway Postgres (provisioned in M1/M2 via `railway add --database postgres`): Railway injects it as a service variable. Pull it with `railway variables` (use the public proxy URL `DATABASE_PUBLIC_URL` for local dev; reference the private `DATABASE_URL` on the app service).
 
 ### `demo_wallets.md` (the three demo wallets + chain facts)
 Contains chain facts (chain id **4801**, RPC, explorer, **USDC `0x66145f38cBAC35Ca6F1Dfb4914dF98F1614aeA88`**, 6 decimals, `$10 = 10000000`) and three funded-demo wallets: **Agent 1**, **Agent 2**, **Human** (each with address + private key), plus the faucet funding checklist and demo-staging notes. Use these wallets for the seeded draw and settlement demos.
@@ -67,25 +67,26 @@ Contains chain facts (chain id **4801**, RPC, explorer, **USDC `0x66145f38cBAC35
 | RPC | `https://worldchain-sepolia.g.alchemy.com/public` |
 | Explorer | `https://sepolia.worldscan.org` |
 | USDC (testnet) | `0x66145f38cBAC35Ca6F1Dfb4914dF98F1614aeA88` — Bridged USDC.e, 6 decimals |
-| DB | DigitalOcean managed Postgres, `sslmode=require` (creds in `secret_keys`) |
-| Toolchain | Node v22.20, pnpm 10.18, npm 11.6, Docker 28.4 present. Railway CLI NOT installed (M1 installs it) |
+| Railway project | **`worldcoin_app`** — id `c3751ac9-2806-4e9e-83d7-30504b6a059f`, env `production` (`928cd32e-b60e-43b3-86f7-2c7bbcb9476d`), in workspace "Carson Weeks's Projects". **Already exists — LINK to it, never create a new project.** No services yet (M1 adds the app service, M2 adds Postgres). |
+| DB | Railway Postgres (provisioned in the project above via `railway add --database postgres`); `DATABASE_URL` injected as a service variable, pulled with `railway variables` |
+| Toolchain | Node v22.20, pnpm 10.18, npm 11.6, Docker 28.4. Railway CLI **installed (5.12.1) and authenticated** as `carson@taho.is`. **All** Railway ops go through the CLI via the `use-railway` skill |
 
 ### MCP servers available to the loop (configured in `.mcp.json`)
 - **`world-developer-portal`** (HTTP, authed with the team API key) — use for app/RP config, and to **create World ID v4 actions** per drop (`create_world_id_action`), check registration status, etc. Call `get_app_config` with the app id to re-confirm endpoints if unsure.
-- **`railway`** — requires an OAuth handshake (`authenticate` → user completes in browser → `complete_authentication`). If the loop hits this and can't complete the browser step, write the auth URL to `## BLOCKED`. The Railway **CLI** (`railway up`, etc.) is the primary deploy path; the MCP is a convenience.
+- **`railway`** — requires an OAuth handshake (`authenticate` → user completes in browser → `complete_authentication`). If the loop hits this and can't complete the browser step, write the auth URL to `## BLOCKED`. **The Railway CLI (`railway login`/`railway up`/`railway add`/`railway variables`/`railway domain`/`railway status`, etc.) is the path for ALL Railway operations** — deploy, DB provisioning, variables, domains, status. Use `--json` for parsing and never report a deploy done before `railway deployment list --json` shows terminal `SUCCESS`. The MCP is only a convenience for OAuth-scoped reads.
 
 ---
 
 ## 6. Stack decisions (final — don't re-litigate)
 
 - **Next.js (App Router) + TypeScript** — web app + API routes + (preferably) the MCP route handler. `output: 'standalone'` for Docker.
-- **Drizzle ORM** + DigitalOcean Postgres. Migrations via `drizzle-kit`. SSL required.
+- **Drizzle ORM** + Railway Postgres (provisioned via the Railway CLI; `DATABASE_URL` from the service variable). Migrations via `drizzle-kit` (run locally against the public URL or `railway run pnpm db:migrate`).
 - **viem** for chain reads + USDC ERC-20 transfers on chain 4801.
 - **`@modelcontextprotocol/sdk`** for the remote MCP server (streamable-HTTP transport so Claude/ChatGPT can add it as a custom connector).
 - **`@worldcoin/idkit`** (web widget) + the v4 verify HTTP endpoint (server-side).
 - **AgentKit SDK** (`verifyAgentkitSignature`, `createAgentBookVerifier`) for human-backed-agent auth.
 - **Tailwind CSS + shadcn/ui** for the frontend, restyled to the pop-brutalist look (§11).
-- **Railway** (Dockerfile) for hosting.
+- **Railway** (Dockerfile) for hosting. **For every Railway operation — login, deploy, provisioning Postgres, variables, domains, status — invoke the `use-railway` skill** rather than hand-rolling `railway` flags; it carries the correct commands, deploy-`SUCCESS` polling, and `DATABASE_URL` wiring. The CLI is installed and authenticated as `carson@taho.is` (workspace "Carson Weeks's Projects").
 - **NOT using Effect-ts.** Reason: steep learning curve is the top schedule risk for a hackathon timeline, and the architecture is identical with plain async service modules. If a future maintainer wants Effect, that's a post-hackathon refactor.
 
 Confirm exact package names/versions at install time — some World/AgentKit package names may have changed since the research date; if a package 404s, search the World GitHub org / docs and record the correct name in `PROGRESS.md`.
