@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 # ---- Base: pin Node + enable Corepack/pnpm -------------------------------
 FROM node:22.20.0-slim AS base
 ENV PNPM_HOME="/pnpm"
@@ -10,8 +8,7 @@ WORKDIR /app
 # ---- Deps: install with the frozen lockfile ------------------------------
 FROM base AS deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-    pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile
 
 # ---- Build: produce the standalone server --------------------------------
 FROM base AS build
