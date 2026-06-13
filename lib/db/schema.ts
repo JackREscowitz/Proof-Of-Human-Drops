@@ -115,14 +115,18 @@ export const sessions = pgTable("sessions", {
 
 export const orders = pgTable("orders", {
   id: uuid("id").primaryKey().defaultRandom(),
-  entryId: uuid("entry_id")
-    .notNull()
-    .references(() => entries.id, { onDelete: "cascade" }),
+  // Nullable so a standalone settlement (e.g. the M5 /api/admin/test-transfer that proves the
+  // money path before the draw is wired) can be recorded without a winning entry. M6+ ties
+  // real purchases to an entry.
+  entryId: uuid("entry_id").references(() => entries.id, { onDelete: "cascade" }),
   variantId: uuid("variant_id").references(() => variants.id, {
     onDelete: "set null",
   }),
   amountUsdc: numeric("amount_usdc", { precision: 20, scale: 6 }).notNull(),
   txHash: text("tx_hash"),
+  // Sender / recipient of the on-chain transfer (M5) — useful for the orders audit + demo.
+  fromAddress: text("from_address"),
+  toAddress: text("to_address"),
   status: orderStatus("status").notNull().default("awaiting_payment"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
