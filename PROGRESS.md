@@ -8,7 +8,7 @@
 
 ## Milestone status at a glance
 - **M0 — Repo & toolchain bootstrap:** ACCEPTED
-- M1 — Railway connectivity + Docker deploy (Railway CLI): not started
+- **M1 — Railway connectivity + Docker deploy (Railway CLI):** ACCEPTED
 - M2 — DB schema + migrations (Drizzle + Railway Postgres): not started
 - M3 — Drop/variant domain + admin/reset plane: not started
 - M4 — World ID v4 verify + per-drop dedupe (web): not started
@@ -131,3 +131,89 @@
     (gitignored). Run migrations locally against the public URL, or `railway run pnpm db:migrate`.
 - **Do not delete** the Railway project/service or the Railway Postgres database service
   (slow to recreate). Clearing tables/rows is still fine.
+
+---
+
+## 2026-06-13 — iter-003 — M1 Railway connectivity + Docker deploy
+**Status of M1:** ACCEPTED
+
+**Did:**
+- Branched `build/m1-railway-deploy` off `build/m0-bootstrap`. Three commits:
+  - `dd778cc` — carried the uncommitted iter-002 doc edits (Railway migration across
+    PRD/RALPH_GUIDE/CLAUDE.md/ralph.sh) + `package.json` `packageManager: pnpm@10.18.1` pin.
+  - `8ad060a` — `Dockerfile` (multi-stage Next standalone) + `.dockerignore`.
+  - `19a7ded` — **Dockerfile fix** that unblocked the Railway build (see Deviations).
+- **Dockerfile** (final): `node:22.20.0-slim` base, Corepack/pnpm. Stages: `deps`
+  (`pnpm install --frozen-lockfile`), `build` (`pnpm build`, then `cp -r public
+  .next/standalone/` and `cp -r .next/static .next/standalone/.next/static`), `runner`
+  (non-root `nextjs` user, `CMD ["node","server.js"]`, EXPOSE 3000, honors `PORT`/`HOSTNAME`).
+- **`.dockerignore`** excludes node_modules, .next, .git, secrets (`secret_keys`,
+  `demo_wallets.md`, `.env*`, `*.key`, `*.pem`), `.mcp.json`, `.claude`, `.ralph`, `*.md`,
+  `webinspo/`.
+- Railway: linked the **existing** project (no new project created). `railway up` created
+  **one app service**, deployed the Dockerfile, generated a public domain. Verified live.
+
+**RAILWAY IDs (record — do not recreate):**
+- Project `worldcoin_app` = `c3751ac9-2806-4e9e-83d7-30504b6a059f`, env `production`
+  = `928cd32e-b60e-43b3-86f7-2c7bbcb9476d` (unchanged, linked not created).
+- **App service `worldcoin_app` (the SAME name as the project) = `9f74a937-4034-4767-8fd0-67115833c31d`.**
+  This is the Next.js app service created by `railway up`. Builder = `DOCKERFILE`,
+  dockerfilePath `/Dockerfile`. (CLI link in `~/.railway/config.json` has `service: null`,
+  so pass `--service 9f74a937-4034-4767-8fd0-67115833c31d` explicitly on every CLI call,
+  or run `railway service` to link it.)
+- **Live public URL: `https://worldcoinapp-production.up.railway.app`** (port served on
+  Railway's injected `PORT`, observed `8080` in runtime logs; app binds `0.0.0.0`).
+- Successful deployment id: `ea337c34-e852-4311-a2da-ac7cecf1ec3a` (status `SUCCESS`).
+
+**Acceptance test (literal output):**
+- `railway deployment list --service 9f74a937... --json` → newest
+  `ea337c34-e852-4311-a2da-ac7cecf1ec3a` **SUCCESS**.
+- `curl -s https://worldcoinapp-production.up.railway.app/api/health` → `{"ok":true}`
+  (HTTP 200, first attempt after domain creation).
+- `curl -s https://worldcoinapp-production.up.railway.app/` → contains
+  `Proof-of-Human Drops`.
+- Runtime logs: `▲ Next.js 16.2.9 … ✓ Ready in 0ms … Starting Container` on
+  `http://0.0.0.0:8080`.
+- Local pre-flight: `docker build .` succeeded; `docker run` served
+  `/api/health → {"ok":true}` on a mapped port before deploying.
+
+**Deviations from PRD:**
+- ‼️ **Railway's Metal builder rejected the original Dockerfile.** First two deploy
+  attempts FAILED in ~4s at the `BUILD_IMAGE` step with **no Docker output** (only
+  "scheduling build on Metal builder" twice). `SNAPSHOT_CODE` succeeded, so the upload was
+  fine. Root cause: the `# syntax=docker/dockerfile:1` directive (external BuildKit
+  frontend pull) and the `RUN --mount=type=cache,id=pnpm,target=/pnpm/store` cache mount.
+  **Removed both** (commit `19a7ded`) — they're optimizations, not requirements — and the
+  build ran to completion on Railway. **Local `docker build` was a false-green: it works
+  with those features; Railway does not.** ⇒ **For any future Dockerfile work, do NOT add a
+  `# syntax=` directive or BuildKit `--mount=type=cache` — the Railway Metal builder fails
+  them silently.**
+- Diagnosis path that worked when CLI logs were empty: Railway GraphQL at
+  `https://backboard.railway.com/graphql/v2` with the OAuth `accessToken` from
+  `~/.railway/config.json` (`.user.accessToken`, NOT `.user.token` which is null — the
+  bundled `scripts/railway-api.sh` reads `.user.token` and therefore prints "No Railway
+  token found"; call the API with curl + `Authorization: Bearer <accessToken>` instead).
+  `deploymentEvents(id:)` returns the per-step `step`/`completedAt` that pinpointed
+  `BUILD_IMAGE` as the failing step.
+- `railway up` initial form: had to pass `--service <id>` once the service existed
+  ("Multiple services found"). Used `railway up --ci --service <id>` for an authoritative
+  streaming deploy (exit 0 = deployed).
+
+**NOTES FOR NEXT ITERATION (start M2 — DB schema + migrations):**
+- **Provision Postgres INTO `worldcoin_app`** (do NOT recreate if present — check
+  `railway service list --json` first): `railway add --database postgres --json`. Record
+  the DB service name/ID in PROGRESS.md.
+- **DB wiring** (per iter-002 notes, still current): app service references
+  `DATABASE_URL=${{Postgres.DATABASE_URL}}` (set with `railway variables --set` on service
+  `9f74a937-4034-4767-8fd0-67115833c31d`); local dev pulls `DATABASE_PUBLIC_URL` into a
+  gitignored `.env`. No `sslmode` ceremony.
+- Add `drizzle-orm` + `drizzle-kit` + `postgres` (or `pg`) driver; wire the `db:*` scripts
+  (currently echo-placeholders in `package.json`). Schema: `drops`, `variants`, `entries`,
+  `agents`, `sessions`, `orders`. **Invariant: `entries UNIQUE(drop_id, human_key)`**;
+  nullifier as `NUMERIC(78,0)`; USDC as `NUMERIC(20,6)`.
+- Add `/api/health/db` (`SELECT 1` → `{"db":"ok"}`); redeploy and confirm it's green on the
+  live URL too (proves app↔Postgres over Railway's private network). **Remember: each CLI
+  call needs `--service 9f74a937-4034-4767-8fd0-67115833c31d`** (or `railway service` to
+  link it) since the config link has `service: null`.
+- Redeploy command that works: `railway up --ci --service 9f74a937-4034-4767-8fd0-67115833c31d -m "<msg>"`.
+- No secrets were committed; `.dockerignore` + `.gitignore` both exclude the resource files.
