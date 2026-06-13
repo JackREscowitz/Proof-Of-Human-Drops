@@ -13,6 +13,7 @@ import { isAuthorized, unauthorized } from "@/lib/admin-auth";
 import {
   transitionStatus,
   resetDrop,
+  resetDemo,
   flipComingSoon,
   setSeed,
   setReceiver,
@@ -60,6 +61,13 @@ export async function POST(req: NextRequest, ctx: Ctx) {
               : undefined;
         const drop = await resetDrop(id, { countdownSeconds });
         return Response.json({ ok: true, drop });
+      }
+      case "reset-demo": {
+        // System-wide demo reset (M10): re-open the live drop (clear entries/orders/seed) and
+        // flip the coming-soon item back to coming_soon. Resolves the demo drops BY NAME, so the
+        // :id in the path is ignored — the /admin "RESET DEMO" button can call it on any drop id.
+        const result = await resetDemo();
+        return Response.json({ ok: true, ...result });
       }
       case "seed": {
         const body = await readBody(req);

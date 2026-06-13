@@ -136,6 +136,17 @@ export default function AdminPage() {
         >
           Seed demo
         </button>
+        <button
+          onClick={() =>
+            // One-button reset-to-demo-start (M10). The :id is ignored — the action resolves
+            // the demo drops by name. Falls back to a placeholder id if none are loaded.
+            action(`/api/admin/drops/${drops[0]?.id ?? "demo"}/reset-demo`)
+          }
+          disabled={loading || !secret}
+          className="border-[3px] border-ink bg-pop-blue px-5 py-3 font-extrabold uppercase text-white brutal-hover disabled:opacity-50"
+        >
+          ⟳ Reset demo
+        </button>
       </div>
 
       {drops.map((d) => {

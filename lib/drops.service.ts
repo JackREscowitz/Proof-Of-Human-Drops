@@ -212,6 +212,45 @@ export async function resetDrop(
   return result!; // existence guaranteed by getDropOrThrow above
 }
 
+// Full demo reset choreography (M10) — return the WHOLE system to "Act 1" state in one call,
+// scoped to the seeded demo drops so no other data is touched (RALPH_GUIDE §8). It:
+//   1. resets the live drop (Mac Mini): clear its entries+orders, re-open it, clear drawn_at,
+//      and — unlike the per-drop reset — also CLEAR the draw_seed (a fresh demo re-stages it),
+//   2. ensures the coming-soon drop (Mac Studio) is back in `coming_soon`.
+// Idempotent: runnable back-to-back with no manual DB surgery (the M10 acceptance bar).
+export interface ResetDemoResult {
+  live: DropWithVariants; // the re-opened live drop (Mac Mini)
+  comingSoon: DropWithVariants | null; // the coming-soon drop (Mac Studio), if present
+}
+
+export async function resetDemo(opts: {
+  liveDropName?: string;
+  comingSoonDropName?: string;
+} = {}): Promise<ResetDemoResult> {
+  const liveName = opts.liveDropName ?? "Mac Mini";
+  const comingSoonName = opts.comingSoonDropName ?? "Mac Studio";
+
+  const liveDrop = await findDropByName(liveName);
+  if (!liveDrop) throw new NotFoundError(`live demo drop "${liveName}" not found — run seed first`);
+
+  // Reset the live drop's data and re-open it; also clear the staging seed for a clean slate.
+  await resetDrop(liveDrop.id, { reopen: true, countdownSeconds: null });
+  await setSeed(liveDrop.id, null);
+  const live = (await getDropWithVariants(liveDrop.id))!;
+
+  // Put the coming-soon item back to coming_soon (it may have been flipped open mid-demo).
+  let comingSoon: DropWithVariants | null = null;
+  const csDrop = await findDropByName(comingSoonName);
+  if (csDrop) {
+    if (csDrop.status === "open") {
+      await transitionStatus(csDrop.id, "coming_soon");
+    }
+    comingSoon = (await getDropWithVariants(csDrop.id))!;
+  }
+
+  return { live, comingSoon };
+}
+
 // Flip a coming_soon item to open (or back). Used for the demo "second item" reveal.
 export async function flipComingSoon(dropId: string): Promise<Drop> {
   const drop = await getDropOrThrow(dropId);
