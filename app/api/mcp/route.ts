@@ -41,6 +41,15 @@ import {
   AGENTKIT_HEADER,
   type AgentIdentity,
 } from "@/lib/agentkit-auth";
+import {
+  purchaseForEntry,
+  NotAWinnerError,
+  WindowExpiredError,
+  AlreadyPurchasedError,
+} from "@/lib/draw.service";
+import { getDrop } from "@/lib/drops.service";
+import { getWalletByAddress, getReceiverAddress } from "@/lib/wallets";
+import { InsufficientFundsError } from "@/lib/settlement.service";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs"; // agentkit-core uses viem/siwe + node crypto; not edge-safe.
@@ -90,8 +99,9 @@ function buildServer(req: Request): McpServer {
       instructions:
         "Proof-of-Human Drops: a scarce-goods drop platform where each verified human gets " +
         "exactly one raffle slot per drop. Use list_drops / get_drop_info to browse (no auth). " +
-        "enter_draw and check_status are privileged: send an AgentKit per-request signature in " +
-        `the '${AGENTKIT_HEADER}' header. One slot per human per drop is enforced server-side.`,
+        "enter_draw, check_status and purchase are privileged: send an AgentKit per-request " +
+        `signature in the '${AGENTKIT_HEADER}' header. One slot per human per drop is enforced ` +
+        "server-side; winners call purchase to settle real USDC on World Chain Sepolia.",
     },
   );
 
@@ -289,6 +299,112 @@ function buildServer(req: Request): McpServer {
           ? `Your entry in "${drop.name}" is '${mine.status}'.`
           : `You have not entered "${drop.name}".`,
       );
+    },
+  );
+
+  // --- purchase (PRIVILEGED — M8: end-to-end agent settlement) -----------------------------
+  server.registerTool(
+    "purchase",
+    {
+      title: "Purchase (winners only)",
+      description:
+        "If your human WON this drop's draw, settle the purchase: a REAL USDC transfer of the " +
+        "drop price from your registered wallet to the merchant, on World Chain Sepolia (chain " +
+        `4801). Requires an AgentKit signature in '${AGENTKIT_HEADER}'. Only valid for a 'won' ` +
+        "entry within its purchase window; non-winners / expired / already-purchased are rejected. " +
+        "Returns the on-chain tx hash + explorer link.",
+      inputSchema: { drop_id: z.string().describe("The drop id (uuid) you won and want to buy.") },
+    },
+    async ({ drop_id }) => {
+      // 1) AgentKit per-request auth → verified wallet + humanId.
+      let identity: AgentIdentity;
+      try {
+        identity = await requireAgent(req);
+      } catch (err) {
+        if (err instanceof AgentkitAuthError) {
+          return fail(`402 — AgentKit signature required. ${err.message}`, {
+            error: "payment_required",
+            code: err.code,
+          });
+        }
+        throw err;
+      }
+
+      // 2) Find THIS human's entry for the drop (keyed by humanId via human_key).
+      const entry = await findEntryByHumanKey(drop_id, identity.humanId);
+      if (!entry) {
+        return fail(`you have not entered this drop — nothing to purchase`, {
+          drop_id,
+          human_id: identity.humanId,
+        });
+      }
+
+      const drop = await getDrop(drop_id);
+      if (!drop) return fail(`drop ${drop_id} not found`);
+
+      // 3) Resolve the signer SERVER-SIDE from the entry's stored wallet_address (set at
+      //    enter_draw time = the agent's verified wallet). Keys never cross the wire. As a
+      //    safety net, fall back to the freshly-verified wallet from this request's signature.
+      const walletAddr = entry.walletAddress ?? identity.walletAddress;
+      const signer = walletAddr ? getWalletByAddress(walletAddr) : undefined;
+      if (!signer) {
+        return fail(
+          `no known demo wallet maps to ${walletAddr} — cannot sign the settlement`,
+          { wallet_address: walletAddr },
+        );
+      }
+      // The verified caller must own the entry's wallet (defense in depth: a signature from a
+      // different wallet can't drive someone else's purchase).
+      if (
+        entry.walletAddress &&
+        entry.walletAddress.toLowerCase() !== identity.walletAddress.toLowerCase()
+      ) {
+        return fail(`this entry settles from a different wallet than your signature`, {
+          entry_wallet: entry.walletAddress,
+          your_wallet: identity.walletAddress,
+        });
+      }
+
+      const receiver = drop.receiverAddress || getReceiverAddress();
+
+      // 4) Real on-chain settlement (M5 via M6 purchaseForEntry): won-window check, USDC transfer,
+      //    entry → 'purchased', orders row linked. Map domain errors to tool failures.
+      try {
+        const result = await purchaseForEntry({
+          entryId: entry.id,
+          privateKey: signer.privateKey,
+          receiverAddress: receiver,
+        });
+        return ok(
+          {
+            purchased: true,
+            drop: drop.name,
+            tx_hash: result.txHash,
+            explorer_url: result.explorerUrl,
+            amount_usdc: result.amountUsdc,
+            order_id: result.orderId,
+            from: signer.address,
+            to: receiver,
+            entry_id: entry.id,
+            status: "purchased",
+          },
+          `Purchased "${drop.name}" — ${result.amountUsdc} USDC settled on chain 4801. tx ${result.txHash}`,
+        );
+      } catch (err) {
+        if (err instanceof NotAWinnerError) {
+          return fail(`not a winner: ${err.message}`, { entry_status: entry.status });
+        }
+        if (err instanceof WindowExpiredError) {
+          return fail(`purchase window expired: ${err.message}`);
+        }
+        if (err instanceof AlreadyPurchasedError) {
+          return fail(`already purchased: ${err.message}`);
+        }
+        if (err instanceof InsufficientFundsError) {
+          return fail(`insufficient funds: ${err.message}`, { error: "insufficient_funds" });
+        }
+        throw err;
+      }
     },
   );
 
