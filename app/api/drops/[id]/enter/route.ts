@@ -15,6 +15,7 @@ import {
   WorldIdVerifyError,
 } from "@/lib/worldid.service";
 import { insertWebEntry, AlreadyEnteredError } from "@/lib/entries.service";
+import { getWallet } from "@/lib/wallets";
 
 export const dynamic = "force-dynamic";
 
@@ -100,6 +101,18 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     return Response.json({ error: "verification error" }, { status: 500 });
   }
 
+  // For the demo, a verified web human settles their winning purchase from the "human"
+  // demo wallet (M9). We store that wallet's address on the entry at entry time so the
+  // winner can pay later without re-prompting — the private key is resolved server-side at
+  // purchase time and never crosses the wire (mirrors the agent path). If the human wallet
+  // isn't configured, fall back to no wallet (purchase route can still take { wallet }).
+  let humanWalletAddress: string | null = null;
+  try {
+    humanWalletAddress = getWallet("human").address;
+  } catch {
+    humanWalletAddress = null;
+  }
+
   // 2) Funnel through the per-drop unique constraint.
   try {
     const entry = await insertWebEntry({
@@ -107,6 +120,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       nullifier,
       variantId: body.variantId ?? null,
       verificationLvl: verificationLvlOf(body.idkitResult),
+      walletAddress: humanWalletAddress,
     });
     return Response.json({ ok: true, entry }, { status: 201 });
   } catch (err) {

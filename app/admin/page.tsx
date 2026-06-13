@@ -1,8 +1,9 @@
 "use client";
 
-// Minimal operator console (M3). Intentionally utilitarian — the pop-brutalist theme
-// lands in M9. Gated by ADMIN_SECRET, entered here and sent as the x-admin-secret header.
-import { useCallback, useEffect, useState } from "react";
+// Operator console (M3, restyled pop-brutalist in M9). Gated by ADMIN_SECRET (entered here,
+// sent as the x-admin-secret header). Drives the live demo: seed, lifecycle, seed-RNG, draw,
+// reset, and a CROSS-SURFACE entry view (web World ID + agent AgentKit entries side by side).
+import { useCallback, useState } from "react";
 
 type Variant = { id: string; name: string; sku: string | null; stock: number };
 type Drop = {
@@ -15,10 +16,26 @@ type Drop = {
   closesAt: string | null;
   variants: Variant[];
 };
+type EntryRow = {
+  id: string;
+  source: string;
+  status: string;
+  humanKey: string;
+  walletAddress: string | null;
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  pending: "bg-white",
+  won: "bg-lime",
+  lost: "bg-muted",
+  purchased: "bg-pop-blue text-white",
+  expired: "bg-muted",
+};
 
 export default function AdminPage() {
   const [secret, setSecret] = useState("");
   const [drops, setDrops] = useState<Drop[]>([]);
+  const [entriesByDrop, setEntriesByDrop] = useState<Record<string, EntryRow[]>>({});
   const [log, setLog] = useState<string>("");
   const [loading, setLoading] = useState(false);
 
@@ -29,6 +46,20 @@ export default function AdminPage() {
 
   const append = (msg: string) =>
     setLog((l) => `${new Date().toISOString().slice(11, 19)}  ${msg}\n${l}`);
+
+  const loadEntries = useCallback(
+    async (dropId: string) => {
+      try {
+        const res = await fetch(`/api/admin/drops/${dropId}/entries`, { headers: headers() });
+        if (!res.ok) return;
+        const data = await res.json();
+        setEntriesByDrop((m) => ({ ...m, [dropId]: data.entries ?? [] }));
+      } catch {
+        /* ignore */
+      }
+    },
+    [headers],
+  );
 
   const refresh = useCallback(async () => {
     if (!secret) return;
@@ -41,14 +72,16 @@ export default function AdminPage() {
         return;
       }
       const data = await res.json();
-      setDrops(data.drops ?? []);
-      append(`loaded ${data.drops?.length ?? 0} drops`);
+      const list: Drop[] = data.drops ?? [];
+      setDrops(list);
+      append(`loaded ${list.length} drops`);
+      await Promise.all(list.map((d) => loadEntries(d.id)));
     } catch (e) {
       append(`error: ${String(e)}`);
     } finally {
       setLoading(false);
     }
-  }, [secret, headers]);
+  }, [secret, headers, loadEntries]);
 
   const action = async (path: string, method = "POST", body?: unknown) => {
     setLoading(true);
@@ -59,7 +92,7 @@ export default function AdminPage() {
         body: body ? JSON.stringify(body) : undefined,
       });
       const data = await res.json().catch(() => ({}));
-      append(`${method} ${path} → ${res.status} ${JSON.stringify(data).slice(0, 200)}`);
+      append(`${method} ${path} → ${res.status} ${JSON.stringify(data).slice(0, 180)}`);
       await refresh();
     } catch (e) {
       append(`error: ${String(e)}`);
@@ -68,106 +101,141 @@ export default function AdminPage() {
     }
   };
 
-  useEffect(() => {
-    // no auto-load; operator types the secret then clicks Load
-  }, []);
-
   return (
-    <main style={{ maxWidth: 920, margin: "2rem auto", padding: "0 1rem", fontFamily: "monospace" }}>
-      <h1 style={{ fontSize: 28, fontWeight: 800 }}>Admin / Reset console</h1>
-      <p style={{ color: "#666" }}>Operator plane (M3). Enter the admin secret to load drops.</p>
+    <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-5 py-8 sm:px-8">
+      <header className="flex items-center justify-between border-b-[3px] border-ink pb-4">
+        <h1 className="display text-3xl sm:text-4xl">ADMIN · RESET CONSOLE</h1>
+        <a href="/" className="pill brutal-hover">
+          ← Site
+        </a>
+      </header>
+      <p className="text-sm font-medium text-muted-foreground">
+        Operator plane. Enter the admin secret to load drops, run draws, and reset for a fresh
+        demo. Entries below show both web (World ID) and agent (AgentKit) surfaces.
+      </p>
 
-      <div style={{ display: "flex", gap: 8, margin: "1rem 0" }}>
+      <div className="flex flex-wrap gap-3">
         <input
           type="password"
           placeholder="ADMIN_SECRET"
           value={secret}
           onChange={(e) => setSecret(e.target.value)}
-          style={{ flex: 1, padding: 8, border: "2px solid #000" }}
+          className="min-w-[220px] flex-1 border-[3px] border-ink bg-white px-4 py-3 font-mono text-sm outline-none focus:bg-lime/20"
         />
-        <button onClick={refresh} disabled={loading || !secret} style={btn}>
+        <button
+          onClick={refresh}
+          disabled={loading || !secret}
+          className="border-[3px] border-ink bg-lime px-5 py-3 font-extrabold uppercase brutal-hover disabled:opacity-50"
+        >
           Load
         </button>
         <button
           onClick={() => action("/api/admin/seed")}
           disabled={loading || !secret}
-          style={btn}
+          className="border-[3px] border-ink bg-white px-5 py-3 font-extrabold uppercase brutal-hover disabled:opacity-50"
         >
           Seed demo
         </button>
       </div>
 
-      {drops.map((d) => (
-        <div key={d.id} style={{ border: "2px solid #000", padding: 12, marginBottom: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <strong>
-              {d.name} — <span>{d.status}</span>
-            </strong>
-            <span>
-              {d.priceUsdc} USDC · {d.totalSlots} slot(s) · seed={d.drawSeed ?? "—"}
-            </span>
-          </div>
-          <div style={{ fontSize: 12, color: "#666", margin: "4px 0" }}>
-            id={d.id} · variants: {d.variants.map((v) => v.name).join(", ") || "none"}
-          </div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            <button style={btnSm} onClick={() => action(`/api/admin/drops/${d.id}/open`)}>
-              open
-            </button>
-            <button style={btnSm} onClick={() => action(`/api/admin/drops/${d.id}/close`)}>
-              close
-            </button>
-            <button style={btnSm} onClick={() => action(`/api/admin/drops/${d.id}/settle`)}>
-              settle
-            </button>
-            <button style={btnSm} onClick={() => action(`/api/admin/drops/${d.id}/flip`)}>
-              flip coming_soon↔open
-            </button>
-            <button style={btnSm} onClick={() => action(`/api/admin/drops/${d.id}/reset`)}>
-              reset
-            </button>
-            <button
-              style={btnSm}
-              onClick={() => {
-                const seed = prompt("RNG seed (blank to clear):") ?? "";
-                action(`/api/admin/drops/${d.id}/seed`, "POST", { seed: seed || null });
-              }}
-            >
-              set seed
-            </button>
-            <button
-              style={btnSm}
-              onClick={() =>
-                action(`/api/admin/drops/${d.id}/dummy-entry`, "POST", {
-                  humanKey: `dummy-${Math.random().toString(36).slice(2, 8)}`,
-                })
-              }
-            >
-              + dummy entry
-            </button>
-          </div>
-        </div>
-      ))}
+      {drops.map((d) => {
+        const rows = entriesByDrop[d.id] ?? [];
+        const web = rows.filter((r) => r.source === "web").length;
+        const agent = rows.filter((r) => r.source === "agent").length;
+        return (
+          <div key={d.id} className="brutal flex flex-col gap-3 p-5">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <span className="display text-2xl">{d.name}</span>
+              <span className="pill bg-lime">{d.status}</span>
+            </div>
+            <div className="font-mono text-xs text-muted-foreground">
+              id={d.id} · {d.priceUsdc} USDC · {d.totalSlots} slot(s) · seed=
+              {d.drawSeed ?? "—"} · variants: {d.variants.map((v) => v.name).join(", ") || "none"}
+            </div>
 
-      <h2 style={{ fontSize: 16, marginTop: 24 }}>Log</h2>
-      <pre style={{ background: "#111", color: "#0f0", padding: 12, whiteSpace: "pre-wrap", maxHeight: 280, overflow: "auto" }}>
-        {log || "(no actions yet)"}
-      </pre>
+            {/* Cross-surface entry view */}
+            <div className="flex flex-col gap-2 border-[3px] border-ink p-3">
+              <div className="flex items-center gap-3 text-xs font-extrabold uppercase">
+                <span>Entries: {rows.length}</span>
+                <span className="pill">web {web}</span>
+                <span className="pill bg-pop-blue text-white">agent {agent}</span>
+              </div>
+              {rows.length === 0 ? (
+                <span className="text-xs text-muted-foreground">no entries</span>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  {rows.map((r) => (
+                    <div
+                      key={r.id}
+                      className="flex items-center justify-between gap-2 border-2 border-ink px-2 py-1 font-mono text-[11px]"
+                    >
+                      <span
+                        className={`px-1.5 py-0.5 font-bold uppercase ${
+                          r.source === "agent" ? "bg-pop-blue text-white" : "bg-lime"
+                        }`}
+                      >
+                        {r.source}
+                      </span>
+                      <span className="flex-1 truncate">{r.humanKey}</span>
+                      <span
+                        className={`px-1.5 py-0.5 font-bold uppercase ${
+                          STATUS_COLORS[r.status] ?? "bg-white"
+                        }`}
+                      >
+                        {r.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {[
+                ["open", `/api/admin/drops/${d.id}/open`],
+                ["close", `/api/admin/drops/${d.id}/close`],
+                ["draw", `/api/admin/drops/${d.id}/draw`],
+                ["reset", `/api/admin/drops/${d.id}/reset`],
+                ["flip", `/api/admin/drops/${d.id}/flip`],
+              ].map(([label, path]) => (
+                <button
+                  key={label}
+                  className="border-2 border-ink bg-white px-3 py-1.5 text-xs font-extrabold uppercase brutal-hover"
+                  onClick={() => action(path)}
+                >
+                  {label}
+                </button>
+              ))}
+              <button
+                className="border-2 border-ink bg-white px-3 py-1.5 text-xs font-extrabold uppercase brutal-hover"
+                onClick={() => {
+                  const seed = prompt("RNG seed (blank to clear):") ?? "";
+                  action(`/api/admin/drops/${d.id}/seed`, "POST", { seed: seed || null });
+                }}
+              >
+                set seed
+              </button>
+              <button
+                className="border-2 border-ink bg-white px-3 py-1.5 text-xs font-extrabold uppercase brutal-hover"
+                onClick={() =>
+                  action(`/api/admin/drops/${d.id}/dummy-entry`, "POST", {
+                    humanKey: `dummy-${Math.random().toString(36).slice(2, 8)}`,
+                  })
+                }
+              >
+                + dummy
+              </button>
+            </div>
+          </div>
+        );
+      })}
+
+      <div className="flex flex-col gap-2">
+        <h2 className="display text-xl">Log</h2>
+        <pre className="max-h-72 overflow-auto border-[3px] border-ink bg-ink p-3 text-xs whitespace-pre-wrap text-lime">
+          {log || "(no actions yet)"}
+        </pre>
+      </div>
     </main>
   );
 }
-
-const btn: React.CSSProperties = {
-  padding: "8px 14px",
-  border: "2px solid #000",
-  background: "#c6ff00",
-  fontWeight: 700,
-  cursor: "pointer",
-};
-const btnSm: React.CSSProperties = {
-  padding: "4px 8px",
-  border: "1px solid #000",
-  background: "#fff",
-  cursor: "pointer",
-  fontSize: 12,
-};
