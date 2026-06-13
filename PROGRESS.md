@@ -12,7 +12,7 @@
 - **M2 — DB schema + migrations (Drizzle + Railway Postgres):** ACCEPTED
 - **M3 — Drop/variant domain + admin/reset plane:** ACCEPTED
 - **M4 — World ID v4 verify + per-drop dedupe (web):** ACCEPTED
-- M5 — USDC settlement (viem, chain 4801): not started
+- **M5 — USDC settlement (viem, chain 4801):** ACCEPTED
 - M6 — Fair draw engine + winner purchase window: not started
 - M7 — MCP server: info + entry tools (AgentKit auth): not started
 - M8 — MCP purchase tool + e2e agent settlement: not started
@@ -479,3 +479,84 @@ leaving closes_at untouched/null).
 - ⚠️ Drizzle unique/constraint errors live on `err.cause.code` (see M4 fix) — reuse that pattern.
 - ⚠️ Still on branch `build/m3-admin-plane` (nothing merged to main yet). Fine to continue here or
   branch `build/m5-settlement` off it.
+
+---
+
+## 2026-06-13 — iter-004 (cont.) — M5 USDC settlement on World Chain Sepolia (viem, chain 4801)
+**Status of M5:** ACCEPTED
+
+**Did:** (same branch `build/m3-admin-plane`, continued after M4)
+- **Installed `viem@2.52.2`.** viem ships a built-in **`worldchainSepolia`** chain (id `4801`) —
+  used it, RPC overridden to `WORLD_CHAIN_SEPOLIA_RPC` (`https://worldchain-sepolia.g.alchemy.com/public`).
+- **`lib/chain.ts`**: `publicClient()` / `walletClientFromKey(pk)`, `USDC_ADDRESS`
+  `0x66145f38cBAC35Ca6F1Dfb4914dF98F1614aeA88` (6 dec), `EXPLORER` `https://sepolia.worldscan.org`,
+  `explorerTxUrl()`, minimal ERC-20 ABI (balanceOf/transfer/decimals).
+- **`lib/settlement.service.ts`**: `transferUsdc({ privateKey, to, amount, entryId?, recordOrder? })`
+  — pre-flights USDC + native ETH (throws `InsufficientFundsError` with the faucet links if dry),
+  sends ERC-20 `transfer`, **waits for the receipt**, writes an `orders` row (tx_hash, from/to,
+  status confirmed|failed). `getBalances(addr, blockNumber?)` (block-pinned reads avoid the public
+  RPC read-after-write race). `toUsdcRaw("10")` → `10_000_000n`.
+- **`lib/wallets.ts`**: resolves demo wallets by NAME (`agent1`|`agent2`|`human`|`agent`) →
+  `{ address, privateKey }` from env. Keys never cross the client; routes pass names only.
+- **Schema/migration `0001_gorgeous_the_hand.sql`**: `orders.entry_id` made **nullable** (so a
+  standalone settlement can be recorded before M6 wires it to a winning entry) + added
+  `orders.from_address` / `orders.to_address`. Applied via `pnpm db:migrate`.
+- **Routes (auth-gated via `lib/admin-auth.ts`):**
+  - `GET /api/admin/balances` — USDC+ETH for all demo wallets, or `?address=0x…`.
+  - `POST /api/admin/test-transfer` — `{ from?, to?, amount? }` (defaults agent1→agent2, 1 USDC);
+    `InsufficientFundsError` → **402**.
+- **`scripts/m5-acceptance.ts`** + **`scripts/check-balances.ts`**.
+
+**Commit:** `5c3ab0b`. Deployed: `railway up --ci --service 9f74a937…` → "Deploy complete" (exit 0).
+
+**Funding (verified on-chain at start of M5):** Agent 1 / Agent 2 / Human each had **0.01 ETH +
+20 USDC**; the secret_keys Agent Wallet (`0x49Eb…3613`) has 20 USDC but **0 ETH** (can't pay gas —
+use the demo wallets for transfers). Faucets did NOT need a human — no BLOCK.
+
+**Acceptance test (literal — real on-chain txs on chain 4801, all `status: confirmed`):**
+- `pnpm exec tsx scripts/m5-acceptance.ts` (real 10 USDC agent1→agent2) → **M5_ACCEPTANCE: PASS (0 failures)**:
+  - tx `0xa87870cf92535582d1429a1979e3af68ca0b1218d14bdadc5a15a5310e121ec2`
+    (explorer: https://sepolia.worldscan.org/tx/0xa87870cf92535582d1429a1979e3af68ca0b1218d14bdadc5a15a5310e121ec2)
+  - asserts: receipt success · valid 32-byte hash · amount 10 · `orders` row (tx_hash/status=confirmed/
+    amount_usdc=10.000000/from/to) · **sender −10, recipient +10 USDC** (delta read at the mined block).
+  - (An earlier identical run produced confirmed tx `0x98a7636dea1814845f7124589e31caf9feccc267995bf1fa78542d422f4fbf19`;
+    its only "failures" were a balance read-after-write race, since fixed with block-pinned reads.)
+- **Live money path through the Railway app:** `POST /api/admin/test-transfer {from:human,to:agent1,amount:1}`
+  → `{"ok":true,"status":"confirmed","txHash":"0x2be63793b4847274eea2f7ff387da9d448b453e88742ac0b60e4368e28f60d49","orderId":"3a6c412a-…"}`
+  (explorer: https://sepolia.worldscan.org/tx/0x2be63793b4847274eea2f7ff387da9d448b453e88742ac0b60e4368e28f60d49).
+  Auth: `/api/admin/balances` and `/api/admin/test-transfer` both **401 without the secret**.
+- Live `GET /api/admin/balances` (chainId 4801) after the demo txs: agent1 **0** USDC, agent2 **40**,
+  human **19** (each still ~0.01 ETH).
+
+**Deviations from PRD:** `orders.entry_id` made nullable (PRD didn't specify) so the standalone
+test-transfer can record an order without a winning entry — M6 will set `entry_id` for real purchases.
+Added `from_address`/`to_address` to `orders` for the audit/demo (not in the original schema).
+
+**⚠️ WALLET BALANCES NOW (post-M5, important for M6/M8):** agent1 **0 USDC**, agent2 **40 USDC**,
+human **19 USDC**; all ~0.009–0.01 ETH. **For M6/M8 the WINNER must have ≥ price (10 USDC) to buy.**
+If you seed the draw so a specific wallet wins, make sure THAT wallet is funded — agent1 is currently
+dry. Either re-fund agent1 (faucets: https://faucet.circle.com Worldchain Sepolia ~20 USDC/2h;
+gas https://www.alchemy.com/faucets/world-chain-sepolia) or seed the win to agent2/human (funded).
+
+**NOTES FOR NEXT ITERATION (start M6 — Fair draw engine + winner→purchase window):**
+- `lib/draw.service.ts`: at `closes_at` (or admin **force-draw**), pick `total_slots` winners
+  **uniformly at random** from `entries` where `status='pending'` for the drop → mark `won`, rest `lost`.
+- **Seedable RNG**: the drop's `draw_seed` (already on `drops`, set via `/api/admin/drops/:id/seed`)
+  makes the winner deterministic for staged demos; no seed → real CSPRNG (`node:crypto`). Use a
+  seeded PRNG (e.g. hash the seed + entry ids → sort) so the SAME seed + SAME entry set → SAME winner.
+- **Winner purchase window**: a `won` entry can `purchase` within a bounded window → calls
+  **`transferUsdc` (M5)** for `price_usdc` from the winner's wallet to a merchant/receiver → set
+  `orders.entry_id` + entry `purchased`; expired window → `expired`. Non-winners blocked.
+- Wire admin **force-draw** (`/api/admin/drops/:id/draw` or add to the `:id/:action` dispatch) to run
+  the draw immediately (no real countdown wait in the demo).
+- **Reusable money path:** `transferUsdc({ privateKey, to, amount, entryId })` from
+  `lib/settlement.service.ts`; resolve the winner's wallet via `lib/wallets.ts` (`getWallet(name)`).
+  Map web entries → a wallet for the demo (e.g. the "human" demo wallet). Record which wallet maps to
+  the seeded winner. Chain client in `lib/chain.ts`.
+- **Acceptance:** fixed seed + known entry set → exact expected winner every run; that winner completes
+  a real USDC purchase on 4801 (ends `purchased`); non-winners cannot purchase.
+- Reusable IDs unchanged: app service `9f74a937-4034-4767-8fd0-67115833c31d`, Postgres
+  `5a9197a2-96c1-44d2-9305-dbbb3204cbc1`, live `https://worldcoinapp-production.up.railway.app`.
+  Env on Railway now also has WORLD_CHAIN_SEPOLIA_RPC + DEMO_{AGENT1,AGENT2,HUMAN}_{PK,ADDRESS}.
+  Redeploy: `railway up --ci --service 9f74a937… -m "<msg>"`. ⚠️ Avoid `0n` bigint literals
+  (tsconfig target ES2017) — use `BigInt(0)`.
