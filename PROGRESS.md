@@ -14,7 +14,7 @@
 - **M4 — World ID v4 verify + per-drop dedupe (web):** ACCEPTED
 - **M5 — USDC settlement (viem, chain 4801):** ACCEPTED
 - **M6 — Fair draw engine + winner purchase window:** ACCEPTED
-- M7 — MCP server: info + entry tools (AgentKit auth): not started
+- **M7 — MCP server: info + entry tools (AgentKit auth):** ACCEPTED
 - M8 — MCP purchase tool + e2e agent settlement: not started
 - M9 — Web purchase UI + pop-brutalist design pass: not started
 - M10 — Demo hardening + reset choreography + dry run: not started
@@ -681,3 +681,133 @@ https://www.alchemy.com/faucets/world-chain-sepolia.
   rejects `# syntax=` / BuildKit cache mounts in the Dockerfile.
 - ⚠️ Still on branch `build/m3-admin-plane` (nothing merged to main). Fine to continue or branch
   `build/m7-mcp` off it.
+
+---
+
+## 2026-06-13 — iter-006 — M7 MCP server: info + entry tools (AgentKit per-request auth)
+**Status of M7:** ACCEPTED
+
+**Did:** (same branch `build/m3-admin-plane`, continued after M6)
+- **Confirmed the REAL package names + APIs** (PRD said to verify): **`@worldcoin/agentkit@0.2.0`**
+  re-exports **`@worldcoin/agentkit-core@0.2.0`**, which has the exact Option-A primitives the
+  PRD references: `parseAgentkitHeader`, `validateAgentkitMessage`, `verifyAgentkitSignature`,
+  `createAgentBookVerifier`, `formatSIWEMessage`, `AgentkitPayloadSchema`. (No
+  `verifyAgentkitSignature` lived on the top-level `@worldcoin/agentkit` — it's in `-core`,
+  which `agentkit` re-exports via `export *`. Import from either.) MCP: **`@modelcontextprotocol/sdk@1.29.0`**.
+  Added `zod@4.4.3` (SDK peer; resolved automatically). Commit `99b1657`.
+- **`lib/agentkit-auth.ts` (server, Option A)** — per-request AgentKit auth pipeline:
+  1) `parseAgentkitHeader(header)` (base64(JSON) → SIWE-shaped `AgentkitPayload`),
+  2) `validateAgentkitMessage(payload, resourceUri)` — binds the signed message to THIS server's
+     domain/uri + freshness (replay window),
+  3) `verifyAgentkitSignature(payload, rpcUrl)` — EIP-191/ERC-1271 verify, recovers the wallet
+     (uses `WORLD_CHAIN_SEPOLIA_RPC`; falls back to public Alchemy),
+  4) `createAgentBookVerifier().lookupHuman(address)` → anonymous `humanId` on World Chain.
+  Throws `AgentkitAuthError` (→ 402 challenge) on missing/invalid sig. **Header:** `x-agentkit-payload`
+  (aliases `x-agentkit`/`agentkit-payload`/`x-payment`). `resourceUriFromRequest` honors Railway's
+  `x-forwarded-proto`/`x-forwarded-host` so the signed domain matches the public URL.
+- **`lib/agentkit-client.ts` (client signer)** — what an agent does before a privileged call:
+  build the SIWE message with `formatSIWEMessage`, sign EIP-191, emit the base64 header. Used by
+  the test harness + reused by M8. ‼️ **Protocol gotcha (cost me a debug cycle):**
+  `validateAgentkitMessage` requires **`payload.domain` = URL hostname (NO port)** while
+  **`payload.uri` = full origin (WITH port)**. Splitting them wrong → "Domain mismatch". Encoded
+  this split in the client builder; documented in both files.
+- **`app/api/mcp/route.ts`** — remote MCP server mounted as a Next route handler using the SDK's
+  **`WebStandardStreamableHTTPServerTransport`** (speaks Web `Request`/`Response` — no Node req/res
+  adapter; perfect for App-Router handlers). **STATELESS** (`sessionIdGenerator: undefined`,
+  `enableJsonResponse: true`): each POST builds a fresh `McpServer`+transport, connects, handles one
+  request, tears down → auth is purely per-request (Option A, no server session as source of truth).
+  `runtime = "nodejs"` (agentkit-core uses siwe/viem/node-crypto, not edge-safe). Tools close over
+  the live `Request` so privileged tools read the AgentKit header off the actual request.
+  **Tools:** `list_drops`, `get_drop_info(drop_id)` (both public/informational; get_drop_info also
+  returns YOUR status if signed), `enter_draw(drop_id, variant?)` (PRIVILEGED), `check_status(drop_id)`
+  (PRIVILEGED). Tools return text + embedded JSON; `isError:true` on failures.
+- **`lib/entries.service.ts`:** added **`insertAgentEntry`** (mirrors `insertWebEntry` but
+  `human_key = humanId`, `source='agent'`, sets `human_id` col, stores the agent `wallet_address`
+  for M8 purchase) + **`findEntryByHumanKey`**. Both funnel through the SAME
+  `UNIQUE(drop_id, human_key)` → the Sybil guarantee now gates the agent surface too.
+- **Tests:** `scripts/m7-acceptance.ts` (MCP-client journey) + `scripts/m7-neg-tamper.ts`
+  (tampered-signature rejection).
+
+**Commit:** `99b1657` (M7 full slice). Deployed: `railway up --ci --service 9f74a937…` →
+"Deploy complete"; newest deployment **`f4f72e3c-16a4-4fbf-85c0-2a182e4e8b86` SUCCESS**.
+
+**Acceptance test (literal output — run against the LIVE Railway URL):**
+```
+MCP_URL = https://worldcoinapp-production.up.railway.app/api/mcp
+OK   MCP advertises the 4 tools (got: check_status, enter_draw, get_drop_info, list_drops)
+OK   list_drops returned 2 drop(s)
+OK   Mac Mini present and open
+OK   Mac Studio present and coming_soon
+OK   get_drop_info(Mac Studio) → coming_soon, 2 variant(s)
+OK   unsigned enter_draw → rejected with 402-style challenge
+agent1 wallet = 0x8BAf91Af9682b5Cc0d69DBE7152f962558D754a7
+OK   agent1 enter_draw(Mac Mini) → entered
+OK   entry recorded source='agent' with entry_id
+OK   agent1 resolved a humanId (agentkit:0x8BAf91Af9682b5Cc0d69DBE7152f962558D754a7)
+OK   agent1 second enter_draw → already_entered (Sybil block), no second slot
+OK   fresh signature has a different nonce (distinct header)
+OK   same wallet, NEW signature → still already_entered (humanId dedupe, not nonce-bound)
+OK   check_status(agent1) → entered=true, status='pending'
+OK   different wallet (humanId agentkit:0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC) can enter Mac Mini
+OK   the two agents resolved to DISTINCT humanIds (per-wallet identity)
+M7_ACCEPTANCE: PASS (0 failures)
+```
+- Also PASS locally (dev server) BEFORE deploy. Tampered-sig negative test:
+  `tampered-sig isError = true | rejected as invalid sig: true` ⇒ verification is genuinely
+  enforced, not header-presence. After the live test I **reset Mac Mini** (cleared the synthetic
+  agent entries) — live demo state pristine again: Mac Mini open (2 var, 0 entries), Mac Studio
+  coming_soon (2 var).
+
+**Deviations from PRD:**
+- ‼️ **AgentBook registration is a real World-App-gated flow we can't do headlessly for the demo
+  wallets** (PRD M7 step 4 + M8 step 2 anticipate this). `createAgentBookVerifier().lookupHuman`
+  queries the canonical AgentBook on **World Chain MAINNET (480)** and returns `null` for our
+  unregistered demo wallets. **Resolution:** the SIGNATURE VERIFICATION (the actual AgentKit
+  security primitive — proving the wallet authorized the request) is genuinely enforced on every
+  privileged call; for the humanId we fall back to a deterministic **wallet-scoped** id
+  `agentkit:<checksummed-address>` (namespaced so it can NEVER collide with a web nullifier). One
+  wallet ⇒ one humanId ⇒ one slot per drop — the dedupe holds. If a wallet IS AgentBook-registered,
+  the real on-chain humanId wins (`agentBookResolved: true`). **Cross-surface honest caveat:** web
+  nullifiers (World ID) and agent humanIds (AgentBook/fallback) are different namespaces, so dedupe
+  is per-surface — exactly as PRD M7 step 4 says to document.
+- Stateless MCP (no session table) chosen over Option-B `sessions` cache — per-request signing is
+  cheap and is the cleanest expression of Option A. The `sessions` table stays available if M8 wants
+  an ergonomic cache, but it's NOT the source of truth.
+- `get_drop_info` opportunistically includes the caller's own entry status when a valid signature is
+  present (never *requires* it) — small UX nicety, not in the PRD's tool list verbatim.
+
+**NOTES FOR NEXT ITERATION (start M8 — MCP purchase tool + e2e agent settlement):**
+- Add a **`purchase(drop_id)`** MCP tool to `app/api/mcp/route.ts`: AgentKit-auth → find THIS human's
+  entry for the drop (`findEntryByHumanKey(dropId, identity.humanId)`) → it must be `won` within its
+  window → call **`purchaseForEntry`** from `lib/draw.service.ts` with the AGENT'S wallet key. The
+  agent's `wallet_address` is ALREADY stored on the entry at `enter_draw` time (I set it), so resolve
+  the signer via **`getWalletByAddress(entry.walletAddress)`** (keys never leave the server). Return
+  tx hash + `explorerTxUrl`. Reject non-winners (NotAWinnerError → tool isError), expired window.
+- **Full agent journey for the M8 acceptance:** via MCP only — `enter_draw` → (admin **force-draw**
+  seeded to this agent: set `drop.draw_seed` via `/api/admin/drops/:id/seed`, then
+  `/api/admin/drops/:id/draw`) → `purchase` → real USDC tx on 4801 → entry `purchased`. The seeded
+  RNG is `SHA-256(seed + ":" + entryId)` ascending; to make a SPECIFIC agent win with `total_slots=1`,
+  either seed so its entry sorts first OR (simpler for the demo) make it the ONLY entrant. Reuse the
+  M6 prediction logic from `scripts/m6-acceptance.ts`.
+- ‼️ **WALLET FUNDING:** the winning agent wallet must hold **≥ price (10 USDC) + gas**. Re-check with
+  `pnpm exec tsx scripts/check-balances.ts` before the run. Post-M6 rough state: agent1 ~1 USDC (it's
+  the default RECEIVER), agent2 ~30 USDC, human ~19 USDC; all ~0.009–0.01 ETH. **Seed the win to a
+  funded wallet (agent2)** or refund: USDC https://faucet.circle.com (Worldchain Sepolia ~20/2h), gas
+  https://www.alchemy.com/faucets/world-chain-sepolia. NOTE the agent wallet that ENTERS is the one
+  that PAYS — pass `DEMO_AGENT2_PK` to `buildAgentkitHeader` so entry.wallet_address = agent2.
+- **Reusable client signer:** `buildAgentkitHeader({ privateKey, resourceUri })` from
+  `lib/agentkit-client.ts` (domain/uri split handled). The MCP client transport carries it via
+  `requestInit.headers['x-agentkit-payload']` (see `scripts/m7-acceptance.ts` for the exact pattern).
+- **Confirmed env on Railway app service** already has `WORLD_CHAIN_SEPOLIA_RPC` + `DEMO_*` keys.
+  Added NOTHING new for M7 (no new env vars needed — auth RPC falls back to public Alchemy). Optional:
+  set `AGENTBOOK_RPC_URL` (World Chain mainnet) if you want real AgentBook lookups to resolve.
+- Reusable IDs unchanged: app service `9f74a937-4034-4767-8fd0-67115833c31d`, Postgres
+  `5a9197a2-96c1-44d2-9305-dbbb3204cbc1`, live `https://worldcoinapp-production.up.railway.app`,
+  **MCP endpoint `…/api/mcp`** (streamable-HTTP, stateless). Mac Mini drop id
+  `c27f512e-af27-4963-88d3-a54bdab108a6` (action `drop_c27f512e-…`); Mac Studio
+  `aafd0d75-d313-4aec-8b26-e558a6ffd9ba`. Redeploy: `railway up --ci --service 9f74a937… -m "<msg>"`.
+- ⚠️ Carryover gotchas (unchanged): Next 16 route `params` is a Promise (`await ctx.params`);
+  `@/lib/db` is a lazy proxy; build must pass `env -u DATABASE_URL pnpm build`; Drizzle unique errors
+  on `err.cause.code`; tsconfig ES2017 → `BigInt(0)` not `0n`; Railway Metal builder rejects
+  `# syntax=` / BuildKit cache mounts; **tsx scripts need an async `main()` — top-level await fails
+  esbuild's CJS transform.** Still on branch `build/m3-admin-plane` (nothing merged to main).
