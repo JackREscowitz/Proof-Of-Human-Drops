@@ -11,7 +11,7 @@
 - **M1 — Railway connectivity + Docker deploy (Railway CLI):** ACCEPTED
 - **M2 — DB schema + migrations (Drizzle + Railway Postgres):** ACCEPTED
 - **M3 — Drop/variant domain + admin/reset plane:** ACCEPTED
-- M4 — World ID v4 verify + per-drop dedupe (web): not started
+- **M4 — World ID v4 verify + per-drop dedupe (web):** ACCEPTED
 - M5 — USDC settlement (viem, chain 4801): not started
 - M6 — Fair draw engine + winner purchase window: not started
 - M7 — MCP server: info + entry tools (AgentKit auth): not started
@@ -372,3 +372,110 @@ leaving closes_at untouched/null).
   ADMIN_SECRET in `.env`+Railway. Demo drops already seeded live. Branch consider `build/m4-worldid`.
 - ⚠️ Next 16 route handlers: `params` is a Promise (`await ctx.params`); DB client `@/lib/db` is a
   lazy proxy; build must pass with `env -u DATABASE_URL pnpm build` (no env-at-module-load).
+
+---
+
+## 2026-06-13 — iter-004 — M4 World ID v4 verify + per-drop nullifier dedupe (web path)
+**Status of M4:** ACCEPTED
+
+**Did:** (continued on branch `build/m3-admin-plane`)
+- **Confirmed v4 ground truth** via `world-developer-portal` MCP `get_app_config`: app
+  `app_1f62e669c5b6b7ec0b22ee9fcb295a0a` (cloud, active), RP `rp_8a9bfc2fcfa0ada9`
+  (managed, registered), verify endpoint `POST https://developer.world.org/api/v4/verify/rp_8a9bfc2fcfa0ada9`.
+  `actions_v4` was empty.
+- **Created the per-drop World ID v4 actions** via MCP `create_world_id_action` (env=production):
+  - Mac Mini → action string **`drop_c27f512e-af27-4963-88d3-a54bdab108a6`**
+    (portal id `action_v4_30cb8edde5d8b96612721e6343d51bee`), `registration_status: registered`.
+  - Mac Studio → action string **`drop_aafd0d75-d313-4aec-8b26-e558a6ffd9ba`**
+    (portal id `action_v4_f401d33eb14532a1c3984b855fa80247`), registered.
+  - **Naming scheme chosen: `drop_<full-uuid>`.** The *action string* (not the `action_v4_…` id)
+    is what IDKit + the verify endpoint use; it's deterministic from the drop id, so a demo
+    **reset keeps the same action** (no re-create needed). Stored on `drops.world_action_id`
+    (backfilled via `scripts/backfill-actions.ts`).
+- **Installed `@worldcoin/idkit@4.1.8`** (a real v4 package; pulls `@worldcoin/idkit-core@4.1.8`
+  + `@worldcoin/idkit-server@1.1.1`). Authoritative API (read from the bundled `.d.ts`, NOT guessed):
+  - `signRequest({ signingKeyHex, action, ttl })` → `{ sig, nonce, createdAt, expiresAt }`
+    — exported from **`@worldcoin/idkit/signing`** (the bare `@worldcoin/idkit-server` is a
+    non-hoisted transitive dep — import via the `/signing` subpath).
+  - Widget: **`IDKitRequestWidget`** with props `{ open, onOpenChange, app_id, action,
+    rp_context, allow_legacy_proofs, preset, onSuccess, onError }`; preset **`proofOfHuman({ signal })`**
+    (v4 proof-of-human w/ legacy orb fallback). `onSuccess(result: IDKitResult)`.
+  - v4 `IDKitResult` (uniqueness): `{ protocol_version:"4.0", nonce, action, responses:[{ identifier,
+    nullifier, issuer_schema_id, expires_at_min, proof:[5 hex] }], ... }`. **No signal_hash
+    computation / no payload reshaping in v4** — post the result verbatim to the verify endpoint.
+- **`lib/worldid.service.ts`** (server-only): `mintRpContext(action, ttl=300)` (wraps `signRequest`),
+  `verifyV4Proof(idkitResult)` → POSTs to the v4 endpoint (no auth header; `security:[]`), throws
+  `WorldIdVerifyError` on `success!==true`; `nullifierFromResult()`. Reads `WORLD_APP_ID` /
+  `WORLD_APP_RP_ID` / `WORLD_APP_SIGNER_KEY` from env (the signer key is the RP signing key).
+- **`lib/entries.service.ts`**: `insertWebEntry({ dropId, nullifier, variantId, verificationLvl })`
+  funnels through `UNIQUE(drop_id, human_key)` (humanKey=nullifier, source='web',
+  nullifier_hash=decimal(hex)). `AlreadyEnteredError` on dupe. **`findWebEntry`, `countDropEntries`.**
+- **Routes:** `POST /api/worldid/rp-context` (mint signed context for a drop's action; 409 if drop
+  not open / no action); `POST /api/drops/:id/enter` (binds proof `action` to the drop → verify →
+  dedupe; 201 first entry / 200 `{alreadyEntered:true}` / 422 bad proof).
+- **Web UI:** `/drops/[id]` entry page (server component: drop + variant chips + fairness count) →
+  `components/drop-entry-panel.tsx` (variant state) → `components/world-id-entry.tsx` (the IDKit v4
+  flow: fetch rp-context → open widget → POST result). Landing page now lists drops as cards.
+- **Env:** added `WORLD_APP_ID`, `WORLD_APP_RP_ID`, `WORLD_APP_SIGNER_KEY`, `NEXT_PUBLIC_WORLD_APP_ID`
+  to gitignored `.env` AND to the Railway app service `9f74a937…` (set, then deployed). Values live
+  in `secret_keys` / Railway — not recorded here.
+
+**Commit:** `e322502` (M4 full slice). Deployed: `railway up --ci --service 9f74a937…` → "Deploy complete" (exit 0).
+
+**Acceptance test (literal output):**
+- **Live wiring** (`https://worldcoinapp-production.up.railway.app`):
+  - `/api/health` → `{"ok":true}`, `/api/health/db` → `{"db":"ok"}`.
+  - `POST /api/worldid/rp-context {dropId: MacMini}` → `app_id=app_1f62…`, `action=drop_c27f512e…`,
+    `rp_id=rp_8a9bfc2fcfa0ada9`, signature len 132, ttl 300.
+  - `POST /api/worldid/rp-context {dropId: MacStudio(coming_soon)}` → **HTTP 409** (only open drops).
+  - `POST /api/drops/<MacMini>/enter` with a **bogus proof** → **HTTP 422**
+    `{"error":"World ID verification failed","detail":"All proof verifications failed."}`
+    ⇒ proves the live v4 RP endpoint is integrated and actually verifying (not stubbed).
+- **Dedupe invariant** (`pnpm exec tsx scripts/m4-acceptance.ts`, against live Railway Postgres):
+  ```
+  OK   Mac Mini has a World ID action (drop_c27f512e-af27-4963-88d3-a54bdab108a6)
+  OK   Mac Studio has a World ID action (drop_aafd0d75-d313-4aec-8b26-e558a6ffd9ba)
+  OK   rp_context.rp_id == rp_8a9bfc2fcfa0ada9 / nonce 32-byte / ttl 300 / signature present
+  OK   1) nullifier N → Mac Mini: inserted (one slot taken); human_key==nullifier; source=web; nullifier_hash==decimal(N)
+  OK   2) nullifier N → Mac Mini (replay): AlreadyEnteredError; no second row created
+  OK   3) nullifier N → Mac Studio (different drop): inserted (cross-drop action scoping OK)
+  OK   one entry per drop for this human (Mac Mini + Mac Studio); cleanup removed synthetic entries
+  M4_ACCEPTANCE: PASS (0 failures)
+  ```
+
+**Deviations from PRD:**
+- ‼️ **A real World App proof cannot be produced headlessly** — PRD M4 Verification explicitly
+  allows this ("document the manual step + provide a scripted path"). So M4 is proven in two
+  halves, each against the REAL production code: (a) the verify→live-RP wiring is exercised live
+  (422 on an invalid proof; the endpoint is real and reachable, rp_context is correctly signed),
+  and (b) the dedupe invariant — what a valid proof feeds into — is driven through the exact
+  production `insertWebEntry()` funnel by `scripts/m4-acceptance.ts`. The only step a human does
+  live is hold a phone + verify in World App (that's the M9/M10 demo itself).
+- ‼️ **Unique-violation detection bug found & fixed.** Drizzle wraps the postgres.js error in
+  `DrizzleQueryError`; SQLSTATE `23505` is on **`err.cause.code`**, NOT `err.code` (the M2 script
+  saw `.code` only because it used the raw `sql` client). `isUniqueViolation` now checks both.
+  Without this the `/enter` "already entered" path would 500 instead of returning 200. (Captured.)
+- Action provisioning is **out-of-band via MCP** (done for the 2 demo drops). A brand-new drop
+  created through the admin API would need its v4 action created via the MCP `create_world_id_action`
+  before web entry works (resets are fine — same action). Acceptable for the demo; M7+ can add a
+  server-side self-provision if needed.
+
+**NOTES FOR NEXT ITERATION (start M5 — USDC settlement on World Chain Sepolia, viem):**
+- Add **`viem`**. Chain object: World Chain **Sepolia, id `4801`** (NOT 480), RPC
+  `https://worldchain-sepolia.g.alchemy.com/public`, explorer `https://sepolia.worldscan.org`.
+- **USDC `0x66145f38cBAC35Ca6F1Dfb4914dF98F1614aeA88`**, 6 decimals, `$10 = 10000000` raw. Bridged USDC.e.
+- `lib/settlement.service.ts`: ERC-20 `transfer`, sign with a wallet PK from the resource files —
+  **`demo_wallets.md`** has Agent 1 / Agent 2 / Human (addr + PK + faucet checklist); `secret_keys`
+  has the Agent Wallet (`0x49Eb10a0f136f02A09E5D0702eF0f94521873613`). Wait for receipt; write
+  `orders.tx_hash` + status. The `orders` table already exists (entry_id FK, amount_usdc numeric(20,6)).
+- Guarded admin route `/api/admin/test-transfer` (use `isAuthorized` from `lib/admin-auth.ts`) +
+  a balance read endpoint. Pre-flight USDC + native ETH balances; clear "fund via faucet" error if dry.
+- **Acceptance:** a real 10-USDC transfer between two funded demo wallets confirms on chain 4801 and
+  is recorded in `orders`. If faucets are dry → this is the one OK place to BLOCK (write `## BLOCKED`).
+- Reusable: app service `9f74a937-4034-4767-8fd0-67115833c31d`, Postgres
+  `5a9197a2-96c1-44d2-9305-dbbb3204cbc1`, live `https://worldcoinapp-production.up.railway.app`,
+  ADMIN_SECRET + WORLD_* in `.env`+Railway. Drops seeded live (Mac Mini open, Mac Studio coming_soon)
+  with their `world_action_id` set. Redeploy: `railway up --ci --service 9f74a937… -m "<msg>"`.
+- ⚠️ Drizzle unique/constraint errors live on `err.cause.code` (see M4 fix) — reuse that pattern.
+- ⚠️ Still on branch `build/m3-admin-plane` (nothing merged to main yet). Fine to continue here or
+  branch `build/m5-settlement` off it.
