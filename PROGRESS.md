@@ -9,7 +9,7 @@
 ## Milestone status at a glance
 - **M0 — Repo & toolchain bootstrap:** ACCEPTED
 - **M1 — Railway connectivity + Docker deploy (Railway CLI):** ACCEPTED
-- M2 — DB schema + migrations (Drizzle + Railway Postgres): not started
+- **M2 — DB schema + migrations (Drizzle + Railway Postgres):** ACCEPTED
 - M3 — Drop/variant domain + admin/reset plane: not started
 - M4 — World ID v4 verify + per-drop dedupe (web): not started
 - M5 — USDC settlement (viem, chain 4801): not started
@@ -217,3 +217,76 @@
   link it) since the config link has `service: null`.
 - Redeploy command that works: `railway up --ci --service 9f74a937-4034-4767-8fd0-67115833c31d -m "<msg>"`.
 - No secrets were committed; `.dockerignore` + `.gitignore` both exclude the resource files.
+
+---
+
+## 2026-06-13 — iter-003 (cont.) — M2 DB schema + migrations (Drizzle + Railway Postgres)
+**Status of M2:** ACCEPTED
+
+**Did:** (same branch `build/m1-railway-deploy`, continued after M1)
+- **Provisioned Railway Postgres** into `worldcoin_app` via `railway add --database postgres`.
+  DB service **`Postgres` = `5a9197a2-96c1-44d2-9305-dbbb3204cbc1`** (volume-backed, region iad).
+- **Wired DATABASE_URL:** app service references `DATABASE_URL=${{Postgres.DATABASE_URL}}`
+  (private network) — set with `railway variables --set` on service `9f74a937...`. Local dev
+  pulls `DATABASE_PUBLIC_URL` (TCP proxy `thomas.proxy.rlwy.net:23073`) into a gitignored `.env`.
+- **Schema** (`lib/db/schema.ts`, Drizzle): 6 tables `drops`, `variants`, `entries`, `agents`,
+  `sessions`, `orders` + 5 enums. `entries UNIQUE(drop_id, human_key)` = the Sybil guarantee;
+  `nullifier_hash numeric(78,0)`; `price_usdc`/`amount_usdc numeric(20,6)`. Added two
+  forward-looking columns on `drops`: `draw_seed` (M6 seedable RNG) and `world_action_id` (M4).
+- **DB client** `lib/db/index.ts`: postgres.js + drizzle singleton, **lazy** (see Deviations).
+- **Migrations:** `drizzle.config.ts` + `lib/db/migrate.ts` (tsx runner, loads `.env` via dotenv).
+  `pnpm db:generate` → `drizzle/0000_cuddly_roland_deschain.sql`; `pnpm db:migrate` applied it to
+  Railway Postgres. `package.json` `db:*` scripts now real (were echo placeholders): `db:generate`
+  (drizzle-kit generate), `db:migrate` (tsx lib/db/migrate.ts), `db:studio`, `db:push`.
+- **Health route** `app/api/health/db/route.ts`: `SELECT 1` → `{"db":"ok"}` (503 on error).
+- **Acceptance script** `scripts/m2-acceptance.ts`: proves the unique constraint (self-cleaning).
+- Deps added: `drizzle-orm@0.45.2`, `postgres@3.4.9`, `drizzle-kit@0.31.10` (dev), `tsx`, `dotenv`.
+
+**Commits:** `525f36e` (schema+migrations+route+test), `5b3267e` (lazy DB client build fix).
+
+**Acceptance test (literal output):**
+- `pnpm exec tsx scripts/m2-acceptance.ts` →
+  ```
+  TABLES: agents, drops, entries, orders, sessions, variants
+  ENTRIES UNIQUE: entries_drop_human_key_unique UNIQUE (drop_id, human_key)
+  OK: first entry (HUMAN_A) inserted
+  OK: duplicate (drop_id, HUMAN_A) rejected with unique violation (23505)
+  OK: second distinct entry (HUMAN_B) inserted
+  ENTRY COUNT for throwaway drop: 2
+  M2_ACCEPTANCE: PASS
+  ```
+- Live (Railway, private-network DB): newest deployment `360cf1a2-5a0e-40bb-ab84-1ee63b98ac3a`
+  **SUCCESS**; `curl https://worldcoinapp-production.up.railway.app/api/health/db` → `{"db":"ok"}`
+  (and `/api/health` → `{"ok":true}`). Local standalone server also returned `{"db":"ok"}`.
+
+**Deviations from PRD:**
+- ‼️ **Lazy DB client was required.** First M2 deploy FAILED at `next build`'s "collecting page
+  data": `Failed to collect page data for /api/health/db — DATABASE_URL is not set`. Next.js
+  evaluates route modules at build time, where the Docker build stage has no `DATABASE_URL`
+  (runtime-only on Railway). Original client connected at module load → threw. Fixed by wrapping
+  `db`/`sql` in lazy Proxies (connect on first use). **Verify locally with
+  `env -u DATABASE_URL pnpm build` — it must succeed.** (Memory saved.)
+- Driver choice: `postgres` (postgres.js) over `pg` — lighter, first-class with
+  `drizzle-orm/postgres-js`. Either is allowed by the PRD.
+- Added `db:push` script (not in PRD) as a dev convenience; migrations remain the source of truth.
+
+**NOTES FOR NEXT ITERATION (start M3 — Drop/variant domain + admin/reset plane):**
+- **Still on branch `build/m1-railway-deploy`.** Consider opening `build/m3-admin-plane` off it,
+  or just continue — either is fine (no PR has been opened; nothing merged to main yet).
+- Build `lib/drops.service.ts` (plain TS): create drop, add variants, status transitions
+  (`coming_soon→open→closed→settled`), **reset drop** (truncate entries+orders for that drop_id,
+  set `open`, reset countdown). Use the Drizzle `db` from `@/lib/db` (note: it's a lazy proxy —
+  works exactly like a normal drizzle db at runtime).
+- Admin API routes `/api/admin/*` gated by **`ADMIN_SECRET`** (header or query). Add `ADMIN_SECRET`
+  to `.env` locally AND to the Railway app service via `railway variables --set ADMIN_SECRET=...
+  --service 9f74a937-4034-4767-8fd0-67115833c31d` (pick a value, record that it's set — not the
+  value — here). Endpoints: create/open/close/settle, set/get seed, reset drop, flip coming_soon↔open,
+  force-draw (M6).
+- Seed script: "Mac Mini" drop (variants Silver/Black, total_slots=1, price_usdc=10, status open)
+  + a "coming soon" second item (e.g. "Mac Studio") with variants.
+- Minimal `/admin` page behind the secret (can be ugly).
+- **Reusable facts:** Railway app service `9f74a937-4034-4767-8fd0-67115833c31d`, Postgres
+  `5a9197a2-96c1-44d2-9305-dbbb3204cbc1`, live URL `https://worldcoinapp-production.up.railway.app`.
+  Migrations: edit schema → `pnpm db:generate` → `pnpm db:migrate` (local, hits Railway via public
+  proxy in `.env`). Redeploy: `railway up --ci --service 9f74a937... -m "<msg>"`. DB column naming
+  in SQL is snake_case (drop_id, human_key, price_usdc, etc.); Drizzle TS uses camelCase fields.
