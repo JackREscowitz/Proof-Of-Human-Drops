@@ -66,6 +66,54 @@ export async function insertWebEntry(input: InsertWebEntryInput): Promise<Entry>
   }
 }
 
+export interface InsertAgentEntryInput {
+  dropId: string;
+  // The AgentBook humanId (or wallet-scoped fallback) from agentkit-auth. This is the dedupe
+  // key for the AGENT surface — funnels through the SAME UNIQUE(drop_id, human_key) constraint.
+  humanId: string;
+  variantId?: string | null;
+  // The agent's verified wallet (settles its purchase if it wins; M8). Stored at entry time so
+  // purchase resolves the signer server-side without re-prompting.
+  walletAddress?: string | null;
+}
+
+// Insert an AGENT entry keyed by the AgentBook humanId. Mirrors insertWebEntry but for the
+// MCP/agent path: source='agent', human_key=humanId, human_id column also set. Returns the new
+// row; throws AlreadyEnteredError if this human already entered THIS drop (unique violation).
+export async function insertAgentEntry(input: InsertAgentEntryInput): Promise<Entry> {
+  try {
+    const [row] = await db
+      .insert(entries)
+      .values({
+        dropId: input.dropId,
+        humanKey: input.humanId, // ★ the dedupe key — UNIQUE(drop_id, human_key)
+        source: "agent",
+        humanId: input.humanId,
+        variantId: input.variantId ?? null,
+        walletAddress: input.walletAddress ?? null,
+      })
+      .returning();
+    return row;
+  } catch (err) {
+    if (isUniqueViolation(err)) throw new AlreadyEnteredError(input.dropId);
+    throw err;
+  }
+}
+
+// Find this human's entry in a drop, by human_key (works for both nullifier and humanId since
+// both are stored in the same column). Used by the MCP check_status tool + UI state.
+export async function findEntryByHumanKey(
+  dropId: string,
+  humanKey: string,
+): Promise<Entry | undefined> {
+  const [row] = await db
+    .select()
+    .from(entries)
+    .where(and(eq(entries.dropId, dropId), eq(entries.humanKey, humanKey)))
+    .limit(1);
+  return row;
+}
+
 // Has this human (by nullifier) already entered this drop? Used to render UI state
 // without attempting an insert.
 export async function findWebEntry(
