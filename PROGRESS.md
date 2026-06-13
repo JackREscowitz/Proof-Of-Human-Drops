@@ -16,7 +16,7 @@
 - **M6 — Fair draw engine + winner purchase window:** ACCEPTED
 - **M7 — MCP server: info + entry tools (AgentKit auth):** ACCEPTED
 - **M8 — MCP purchase tool + e2e agent settlement:** ACCEPTED
-- M9 — Web purchase UI + pop-brutalist design pass: not started
+- **M9 — Web purchase UI + pop-brutalist design pass:** ACCEPTED
 - M10 — Demo hardening + reset choreography + dry run: not started
 
 ---
@@ -925,3 +925,162 @@ https://faucet.circle.com (Worldchain Sepolia ~20/2h), gas https://www.alchemy.c
   pnpm build`; Drizzle errors on `err.cause.code`; ES2017 → `BigInt(0)`; Railway Metal builder Dockerfile
   limits; tsx scripts need async `main()`). Still on branch `build/m3-admin-plane`.
 
+
+---
+
+## 2026-06-13 — iter-007 — M9 Web purchase UI + pop-brutalist design pass + cross-surface
+**Status of M9:** ACCEPTED
+
+**Did:** (same branch `build/m3-admin-plane`, continued after M8)
+- **Global pop-brutalist theme** (`app/globals.css`): committed to a **cream canvas**
+  (`#f4f1e8`) with a subtle **blue grid background**, **acid/lime accent** (`#c6ff2e`),
+  thick **3px black borders**, **hard offset shadows** (`box-shadow: 6px 6px 0 ink`), and
+  **square corners** (all `--radius-*` → 0). Remapped the shadcn tokens onto this palette so
+  `/admin` and any shadcn component inherit the look; `.dark` kept identical to the light
+  canvas (nothing inverts). Added reusable component classes: `.brutal`, `.brutal-lime`,
+  `.brutal-hover` (presses into its shadow), `.display` (oversized uppercase), `.pill`.
+  **Display font = `Archivo_Black`** wired via `next/font/google` in `app/layout.tsx`
+  (`--font-display`); also fixed `--font-sans` to point at the geist-sans variable.
+- **Landing** (`app/page.tsx`): editorial drop-campaign layout — top bar, huge hero
+  ("BOT-PROOF DROPS FOR **REAL HUMANS**" with the lime highlight), a **fairness stat block**
+  (total unique humans / 1-slot-per-human / live drops / ∞ duplicates blocked), and a small
+  **grid of featured product cards** (live Mac Mini + coming-soon Mac Studio) with chunky
+  color image-fields, status pills, price, variant chips, and an arrow CTA.
+- **Drop page** (`app/drops/[id]/page.tsx`): big lime product block + hard shadow, oversized
+  name + `$price`, a **fairness stat block broken out by surface** (unique humans · web/World ID
+  · agent/AgentKit — the cross-surface proof, M9 step 5), brutalist variant chips, and the
+  full entry → draw → winner-purchase flow.
+- **Web winner flow** (`components/world-id-entry.tsx`, restyled + extended): the full state
+  machine — verify (IDKit v4) → enter (captures the returned entry id) → **poll**
+  `/api/drops/:id/entry-status` → on `won` show the **"YOU WON ✦ — PURCHASE"** CTA → POST
+  `/api/drops/:id/purchase` (real USDC settlement) → **"PURCHASED ✓"** with an explorer link.
+  Also renders lost / expired / already-entered states.
+- **Backend wiring (the only new logic M9 adds — money path was 100% proven in M5/M6/M8):**
+  - `app/api/drops/[id]/enter/route.ts` now attaches the **`human` demo wallet address** to web
+    entries (via `getWallet("human").address`) so a web winner can settle. Key stays server-side
+    (resolved at purchase time via `getWalletByAddress`), mirroring the agent path.
+  - **NEW** `GET /api/drops/[id]/entry-status?entryId=` — poll a web entry's draw status
+    (won/lost/purchased/expired) + purchase deadline. Read-only, no PII, no auth.
+  - **NEW** `GET /api/admin/drops/[id]/entries` (auth-gated) — the operator cross-surface view:
+    every entry with `source` (web/agent) + status + truncated human_key + counts.
+- **Admin console** (`app/admin/page.tsx`): restyled to the theme; loads each drop's entries and
+  shows a **web/agent cross-surface list** (colored source + status chips) plus
+  open/close/draw/reset/flip/seed/+dummy affordances. Log pane styled lime-on-ink.
+- **Screenshots** captured with a local prod (standalone) server + headless chromium
+  (`scripts/screenshot.mjs`, playwright-core; chromium-headless-shell downloaded to
+  `~/.cache/ms-playwright`, missing `libnspr4/libnss3` extracted from apt .debs into
+  `/tmp/chromedeps` and put on `LD_LIBRARY_PATH` — see gotcha below). Saved to
+  **`docs/screenshots/m9-landing.png`** and **`docs/screenshots/m9-drop.png`** (committed) —
+  they match the pop-brutalist direction (cream + blue grid, lime accent, thick borders, hard
+  shadows, oversized uppercase type, campaign grid).
+- **`scripts/m9-acceptance.ts`** — drives the EXACT production code paths the UI uses, end to
+  end, with real money (a real World ID proof can't be produced headlessly — same M4 caveat).
+
+**Commit:** `33497c7` (M9 full slice). Deployed: `railway up --ci --service 9f74a937…` →
+"Deploy complete"; newest deployment **`6bf1f9a8-24e2-4a13-8dd7-d8f1ef4d29b3` SUCCESS**.
+
+**Acceptance test (literal output — run against the LIVE Railway URL):**
+```
+M9 acceptance — web purchase + cross-surface on chain 4801
+BASE_URL = https://worldcoinapp-production.up.railway.app
+OK   web entry recorded source='web'
+OK   web entry stored the human demo wallet (M9 wiring)
+OK   agent entry recorded source='agent' on the SAME drop
+OK   duplicate WEB nullifier blocked (Sybil gate, web surface)
+OK   duplicate AGENT humanId blocked (Sybil gate, agent surface)
+OK   GET /api/admin/drops/:id/entries → 200
+OK   admin view: 1 web entry
+OK   admin view: 1 agent entry
+OK   admin entries route is auth-gated (401 without secret)
+OK   POST /api/admin/drops/:id/draw → 200
+OK   draw produced exactly 1 winner
+OK   the WEB entry is the seeded winner (deterministic)
+OK   web entry status → 'won'
+OK   agent entry status → 'lost'
+OK   purchase → 200
+OK   valid 32-byte tx hash
+OK   amount == 10 USDC
+OK   purchase result status == 'purchased'
+OK   web entry status → 'purchased'
+OK   orders row linked to the web entry
+OK   orders.status == 'confirmed'
+OK   settled FROM the human demo wallet
+OK   non-winner (agent) purchase → 403 not a winner
+OK   throwaway drop deleted (cascade cleaned entries/orders)
+M9_ACCEPTANCE: PASS (0 failures)
+```
+- **Real web-path settlement tx (chain 4801):**
+  `0x7b3cdbd18891018d1f0f9efca5cd641817042f9bcbae31f7fd8c0c299b1ae41a`
+  https://sepolia.worldscan.org/tx/0x7b3cdbd18891018d1f0f9efca5cd641817042f9bcbae31f7fd8c0c299b1ae41a
+  Independently verified: **status success, block 30423657**, `from` human wallet
+  `0x14BAf4…`, `to` USDC contract `0x66145f38…` (ERC-20 transfer). This is the **WEB half** of
+  the Definition-of-Done "≥2 real txs (one web, one agent)" — M8 `0x4fd61725…` was the agent half.
+- Live landing/build checks: `/api/health` `{"ok":true}`, landing serves "BOT-PROOF / REAL
+  HUMANS / The Collection / Mac Mini"; new routes live (`/api/admin/drops/:id/entries` → 401
+  no-auth, `/api/drops/:id/entry-status` → 404 bogus entry). `env -u DATABASE_URL pnpm build`
+  PASS; `pnpm typecheck` PASS.
+- **Seeded demo state pristine after the run:** Mac Mini open (2 var, $10), Mac Studio
+  coming_soon (2 var, $20) — the acceptance used throwaway drops (create+delete).
+
+**Deviations from PRD:**
+- ‼️ **Web winner flow is server-side settle (no in-browser wallet connect).** PRD M9 step 1
+  explicitly allows "a server-side settle for demo simplicity — pick the simplest convincing
+  path and record it." We map a web entry → the **`human` demo wallet** at `/enter` time
+  (stored on `entries.wallet_address`), then the purchase route resolves the key server-side
+  (`getWalletByAddress`). No browser wallet/WalletConnect — convincing, reproducible, and the
+  key never crosses the wire. This mirrors the agent path exactly.
+- ‼️ **Real World ID proof can't be produced headlessly** (same as M4). The acceptance drives
+  the real production funnels (`insertWebEntry` = what `/enter` calls post-verify) and the real
+  **live HTTP** draw + purchase routes (the exact routes the UI hits). The only human-in-the-loop
+  step is holding a phone to verify in World App — that IS the M10 live demo. The M4 live-RP
+  wiring (422 on a bad proof) already proved the verify endpoint is real.
+- Added two read routes not in the PRD's verbatim list (`entry-status`, admin `entries`) — both
+  are thin reads the UI needs; the admin one is auth-gated.
+- Added `playwright-core` as a **devDependency** (screenshot tooling only; no postinstall browser
+  download, build verified clean with it present). Not used at runtime.
+
+**⚠️ WALLET BALANCES NOW (post-M9 — for M10):** human paid 10 USDC this run (39→**29 USDC**);
+agent1 (receiver) **81 USDC**; agent2 **10 USDC**; all ~0.0099 ETH gas. The secret_keys agent
+wallet still has 20 USDC / 0 ETH (can't pay gas — don't use it to send). For M10's TWO
+back-to-back live runs, ensure the WINNING wallet for each path has ≥10 USDC + gas: web winner =
+**human** (29 USDC, good for ~2 runs), agent winner = **agent2** (10 USDC — good for exactly 1;
+**top up agent2 before a second agent run** via faucet, or seed the agent win to a wallet with
+more headroom). Faucets: USDC https://faucet.circle.com (Worldchain Sepolia ~20/2h), gas
+https://www.alchemy.com/faucets/world-chain-sepolia.
+
+**NOTES FOR NEXT ITERATION (start M10 — Demo hardening + reset choreography + dry run):**
+- **Create `DEMO_RUNBOOK.md`** — the 5-act script (RESEARCH_REPORT §9): web double-entry block →
+  agent enters via MCP → seeded draw → real USDC settlement w/ explorer link → coming-soon query
+  via MCP. Include the **exact seed** that makes the intended winner win, the clicks/commands per
+  act, and the **reset choreography** (reset Mac Mini, re-confirm balances, re-set seed, flip
+  Mac Studio back to coming_soon). Map each act → the 3 Track-A qualification requirements.
+- **One-button reset-to-demo-start.** `resetDrop` already exists (scoped, re-opens, clears
+  drawn_at) + an admin `reset` action. For the FULL choreography you also need: re-set the
+  Mac Mini seed (so the staged winner wins), and ensure Mac Studio is `coming_soon`. Consider a
+  new admin action `reset-demo` (or a small script) that does: reset Mac Mini + set its seed +
+  flip Mac Studio→coming_soon, in one call. The `/admin` console can get a single "RESET DEMO"
+  button. NOTE the demo reset is **scoped to the drop's data** (seeded products survive).
+- **Pre-demo checklist script** (`scripts/predemo-check.ts` or similar): print a green/red board
+  for wallet USDC+ETH balances, drop statuses (Mac Mini open / Mac Studio coming_soon), the seed
+  value, MCP reachability (`…/api/mcp` lists 5 tools), and World ID action existence on each drop.
+- **Full rehearsal:** run all 5 acts on the **live Railway URL** TWICE back-to-back, resetting
+  between, capturing the two real tx hashes into PROGRESS.md. The acceptance is "no manual DB
+  surgery between runs."
+- **Seeding a SPECIFIC web winner among real entries:** the rankKey is `SHA-256(seed:entryId)`
+  ascending; entry ids aren't known until entry time, so for a staged demo the simplest reliable
+  approach is to make the intended winner the **sole/first real entrant** of that surface, or
+  brute-force a seed suffix after entries exist (as `scripts/m9-acceptance.ts` does — search seeds
+  until the target entry sorts first). Document whichever you pick in the runbook.
+- Reusable IDs unchanged: app service `9f74a937-4034-4767-8fd0-67115833c31d`, Postgres
+  `5a9197a2-96c1-44d2-9305-dbbb3204cbc1`, live `https://worldcoinapp-production.up.railway.app`,
+  MCP `…/api/mcp` (5 tools incl. purchase). Mac Mini `c27f512e-…` (open, action `drop_c27f512e-…`),
+  Mac Studio `aafd0d75-…` (coming_soon, action `drop_aafd0d75-…`). ADMIN_SECRET + WORLD_* + DEMO_*
+  + WORLD_CHAIN_SEPOLIA_RPC on Railway. Redeploy: `railway up --ci --service 9f74a937… -m "<msg>"`.
+- ⚠️ Carryover gotchas (all still apply): Next 16 route `params` is a Promise (`await ctx.params`);
+  `@/lib/db` is a lazy proxy; **build must pass `env -u DATABASE_URL pnpm build`**; Drizzle unique
+  errors on `err.cause.code`; tsconfig ES2017 → `BigInt(0)` not `0n`; Railway Metal builder rejects
+  `# syntax=` / BuildKit cache mounts; **tsx scripts need an async `main()`** (top-level await fails
+  esbuild's CJS transform). For screenshots: chromium needs nss/nspr libs — extract from apt
+  .debs (`apt-get download libnspr4 libnss3` → `dpkg-deb -x` → `LD_LIBRARY_PATH`) since
+  `playwright install --with-deps` needs sudo. Still on branch `build/m3-admin-plane` (nothing
+  merged to main).
