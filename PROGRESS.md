@@ -10,7 +10,7 @@
 - **M0 — Repo & toolchain bootstrap:** ACCEPTED
 - **M1 — Railway connectivity + Docker deploy (Railway CLI):** ACCEPTED
 - **M2 — DB schema + migrations (Drizzle + Railway Postgres):** ACCEPTED
-- M3 — Drop/variant domain + admin/reset plane: not started
+- **M3 — Drop/variant domain + admin/reset plane:** ACCEPTED
 - M4 — World ID v4 verify + per-drop dedupe (web): not started
 - M5 — USDC settlement (viem, chain 4801): not started
 - M6 — Fair draw engine + winner purchase window: not started
@@ -290,3 +290,85 @@
   Migrations: edit schema → `pnpm db:generate` → `pnpm db:migrate` (local, hits Railway via public
   proxy in `.env`). Redeploy: `railway up --ci --service 9f74a937... -m "<msg>"`. DB column naming
   in SQL is snake_case (drop_id, human_key, price_usdc, etc.); Drizzle TS uses camelCase fields.
+
+---
+
+## 2026-06-13 — iter-003 (cont.) — M3 Drop/variant domain + admin/reset plane
+**Status of M3:** ACCEPTED
+
+**Did:** (new branch `build/m3-admin-plane` off `build/m1-railway-deploy`)
+- **`ADMIN_SECRET`** generated (32-hex) — stored in gitignored `.env` AND set on the Railway
+  app service `9f74a937...` via `railway variables --set`. (Value not recorded here; it's in
+  `.env` + Railway. To rotate: `railway variables --set ADMIN_SECRET=<new> --service 9f74a937...`.)
+- **`lib/drops.service.ts`** (plain TS, no Effect): `createDrop`, `addVariant`, `getDrop`,
+  `listDrops`/`getDropWithVariants`, `transitionStatus` (with an ALLOWED_TRANSITIONS guard:
+  coming_soon→open; open→closed/coming_soon; closed→settled/open; settled→open),
+  `setSeed`, **`resetDrop`** (a transaction: delete orders for this drop's entries, delete
+  entries, optionally re-open + reset countdown — scoped to ONE drop so seeded products survive),
+  `flipComingSoon`, `insertDummyEntry`/`countEntries`, `findDropByName`, `deleteDrop`.
+  Error classes `NotFoundError`/`InvalidTransitionError` map to 404/409 in the routes.
+- **`lib/admin-auth.ts`**: `ADMIN_SECRET` gate via `x-admin-secret` header or `?secret=` query;
+  fail-closed if unset; timing-safe-ish compare; `unauthorized()` → 401.
+- **`lib/seed.ts`**: idempotent demo seed — deletes any existing Mac Mini/Mac Studio by name then
+  creates **Mac Mini** (status `open`, `total_slots=1`, `price_usdc=10`, variants Silver/Black)
+  + **Mac Studio** (status `coming_soon`, price 20, variants Silver/Black).
+- **Routes:** `GET /api/drops` (public list). Admin (all gated):
+  `POST /api/admin/seed`; `GET|POST /api/admin/drops`; `GET|DELETE /api/admin/drops/:id`;
+  `POST /api/admin/drops/:id/:action` where action ∈ {open, close, settle, reset, flip, seed,
+  add-variant, dummy-entry}. ⚠️ **Next 16: route `params` is a Promise — `await ctx.params`.**
+- **`app/admin/page.tsx`**: minimal client operator console (enter secret → Load/Seed → per-drop
+  buttons + a log). Utilitarian; pop-brutalist restyle is M9.
+- **`scripts/m3-acceptance.ts`**: full-lifecycle + auth + flip test against a BASE_URL.
+
+**Commit:** `066f852`.
+
+**Acceptance test (literal output — run against the LIVE Railway URL):**
+```
+BASE_URL = https://worldcoinapp-production.up.railway.app
+OK   GET /api/admin/drops without secret → 401
+OK   POST /api/admin/seed → 200 ok
+OK   seed created Mac Mini + Mac Studio
+OK   Mac Mini present and open
+OK   Mac Studio present and coming_soon
+OK   Mac Mini has 2 variants
+OK   POST /api/admin/drops (create) → 201
+OK   transition coming_soon → open
+OK   2 dummy entries inserted
+OK   reset → status open
+OK   reset truncated entries (got 0)
+OK   invalid transition open → settled → 409
+OK   flip Mac Studio coming_soon → open
+OK   flip Mac Studio open → coming_soon
+OK   DELETE throwaway drop → 200
+M3_ACCEPTANCE: PASS
+```
+- Also PASS locally (standalone server). Live deployment `46d3a20c-66d1-4353-8b16-d84699d64206`
+  **SUCCESS**. The two demo drops are now SEEDED in the live Railway DB (Mac Mini open, Mac Studio
+  coming_soon) — ready for M4.
+
+**Deviations from PRD:** none material. Added `DELETE /api/admin/drops/:id` (not in PRD) so the
+test cleans up its throwaway drop. Used a single dispatch route `:id/:action` instead of separate
+files per verb (simpler). Reset's countdown is set via `{ countdownSeconds }` body (defaults to
+leaving closes_at untouched/null).
+
+**NOTES FOR NEXT ITERATION (start M4 — World ID v4 verify + per-drop dedupe, WEB path):**
+- This is the **core Sybil guarantee** on the web path. Target **v4** (NOT v3 `verifyCloudProof`).
+  Verified env (RALPH_GUIDE §5 / PRD §0): app `app_1f62e669c5b6b7ec0b22ee9fcb295a0a`, RP
+  `rp_8a9bfc2fcfa0ada9`, verify endpoint `POST https://developer.world.org/api/v4/verify/rp_8a9bfc2fcfa0ada9`.
+- **Create a World ID v4 action per drop.** `actions_v4` is currently empty. Use the
+  **`world-developer-portal` MCP** tool `create_world_id_action` (available this session). Store
+  the created action id on the drop — there's already a **`drops.world_action_id`** column for it.
+  Decide + record: one action per drop (`drop_<id>`) vs a dynamic-action pattern.
+- Web widget: `@worldcoin/idkit` on the drop page (app id above, the drop's action, a signal).
+  Backend verify route POSTs to the v4 endpoint; handle the v4 proof shape (5 hex elements;
+  `nullifier` + `signal_hash`). `secret_keys` has `WORLD_APP_*` / `WORLD_MCP_API_KEY` /
+  `WORLD_APP_SIGNER_KEY` — load what the endpoint needs; add them to `.env` + Railway service.
+- On verify success: insert into `entries` with `human_key = nullifier`, `source='web'`,
+  `nullifier_hash = <numeric>`. Rely on `UNIQUE(drop_id, human_key)` (proven in M2) to reject
+  dupes; map the 23505 to a friendly "already entered". Build an entry service or extend
+  `drops.service.ts`.
+- Reusable: app service `9f74a937-4034-4767-8fd0-67115833c31d`, Postgres
+  `5a9197a2-96c1-44d2-9305-dbbb3204cbc1`, live `https://worldcoinapp-production.up.railway.app`,
+  ADMIN_SECRET in `.env`+Railway. Demo drops already seeded live. Branch consider `build/m4-worldid`.
+- ⚠️ Next 16 route handlers: `params` is a Promise (`await ctx.params`); DB client `@/lib/db` is a
+  lazy proxy; build must pass with `env -u DATABASE_URL pnpm build` (no env-at-module-load).
