@@ -5,15 +5,19 @@ import Link from "next/link";
 import HeroModelStageClient from "@/components/hero-model-stage.client";
 import ScrollCue from "@/components/scroll-cue";
 import ScrollToButton from "@/components/scroll-to-button";
+import LaunchTimer from "@/components/launch-timer";
 
 export default function HeroPanel({
   totalEntries,
   openCount,
   scrollToSlug,
+  nextLaunch = null,
 }: {
   totalEntries: number;
   openCount: number;
   scrollToSlug?: string;
+  // ISO timestamp of the soonest upcoming drop launch (real M11 clock), or null.
+  nextLaunch?: string | null;
 }) {
   return (
     <div className="relative flex min-h-[100svh] flex-col px-5 pb-8 pt-6 sm:px-8">
@@ -69,13 +73,21 @@ export default function HeroPanel({
             </div>
           </dl>
 
-          <div className="flex flex-wrap gap-4">
+          <div className="flex flex-wrap items-center gap-4">
             <ScrollToButton
               targetSlug={scrollToSlug}
               className="brutal-lime brutal-hover inline-flex items-center gap-2 px-7 py-4 text-lg font-extrabold uppercase"
             >
               Shop the drop <span aria-hidden>↓</span>
             </ScrollToButton>
+            {/* Small "next drop" countdown — the soonest scheduled launch, on the real clock. */}
+            {nextLaunch && (
+              <LaunchTimer
+                target={nextLaunch}
+                mode="launch"
+                className="flex items-baseline gap-2 border-[3px] border-ink bg-white px-4 py-2.5 [&_span:last-child]:text-2xl"
+              />
+            )}
           </div>
         </div>
 

@@ -12,6 +12,7 @@
 // The signing wallet for the web winner is the "human" demo wallet, resolved server-side
 // from the entry's stored wallet_address (set at /enter time) — keys never cross the wire.
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import {
   IDKitRequestWidget,
   proofOfHuman,
@@ -214,6 +215,14 @@ export function WorldIdEntry({
         >
           {state === "purchasing" ? "Settling USDC…" : "Purchase — pay USDC ↗"}
         </button>
+        {entryId && (
+          <Link
+            href={`/win/${entryId}`}
+            className="text-sm font-extrabold uppercase underline underline-offset-4"
+          >
+            View your winner page ↗
+          </Link>
+        )}
         {message && <p className="text-sm font-bold text-destructive">{message}</p>}
       </div>
     );

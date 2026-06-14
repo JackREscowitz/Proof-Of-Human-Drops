@@ -21,6 +21,21 @@ export default async function DropDeck({ initialSlug }: { initialSlug: string })
   const totalEntries = counts.reduce((a, b) => a + b, 0);
   const openCount = drops.filter((d) => d.status === "open").length;
 
+  // Soonest upcoming launch (a coming_soon drop with a future opens_at) → the hero "next drop"
+  // timer. Null when nothing is scheduled (all drops already open/drawn). Real M11 timestamps.
+  // This is an async SERVER component — it renders once per request, so reading the clock here
+  // is request-scoped and stable (the client purity rule is a false positive for RSCs).
+  // eslint-disable-next-line react-hooks/purity
+  const now = Date.now();
+  const nextLaunch =
+    drops
+      .filter(
+        (d) =>
+          d.status === "coming_soon" && d.opensAt && d.opensAt.getTime() > now,
+      )
+      .map((d) => d.opensAt!.getTime())
+      .sort((a, b) => a - b)[0] ?? null;
+
   // Order the drops by the presentation slug order; drop anything without presentation meta.
   const ordered = DROP_SLUG_ORDER.map((slug) =>
     drops.find((d) => presentationFor(d.name)?.slug === slug),
@@ -38,6 +53,7 @@ export default async function DropDeck({ initialSlug }: { initialSlug: string })
           totalEntries={totalEntries}
           openCount={openCount}
           scrollToSlug={firstItemSlug}
+          nextLaunch={nextLaunch ? new Date(nextLaunch).toISOString() : null}
         />
       ),
     },
@@ -51,6 +67,9 @@ export default async function DropDeck({ initialSlug }: { initialSlug: string })
             name={drop.name}
             priceUsdc={drop.priceUsdc}
             status={drop.status}
+            opensAt={drop.opensAt ? drop.opensAt.toISOString() : null}
+            closesAt={drop.closesAt ? drop.closesAt.toISOString() : null}
+            drawnAt={drop.drawnAt ? drop.drawnAt.toISOString() : null}
             variants={drop.variants.map((v) => ({ id: v.id, name: v.name }))}
             presentation={presentation}
             index={i + 1}

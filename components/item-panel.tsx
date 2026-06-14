@@ -12,6 +12,7 @@ import { useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { WorldIdEntry } from "@/components/world-id-entry";
+import LaunchTimer from "@/components/launch-timer";
 import type { DropPresentation } from "@/lib/drops.presentation";
 
 export type ItemVariant = { id: string; name: string };
@@ -21,6 +22,10 @@ export type ItemPanelProps = {
   name: string;
   priceUsdc: string;
   status: string;
+  // Real M11 lifecycle timestamps (ISO strings or null). Drive the launch/entry countdowns.
+  opensAt?: string | null;
+  closesAt?: string | null;
+  drawnAt?: string | null;
   variants: ItemVariant[];
   presentation: DropPresentation;
   index: number; // 1-based position among items (for the corner marker)
@@ -32,6 +37,9 @@ export default function ItemPanel({
   name,
   priceUsdc,
   status,
+  opensAt = null,
+  closesAt = null,
+  drawnAt = null,
   variants,
   presentation,
   index,
@@ -39,6 +47,9 @@ export default function ItemPanel({
 }: ItemPanelProps) {
   const [variant, setVariant] = useState<ItemVariant | null>(variants[0] ?? null);
   const open = status === "open";
+  // A drop is SOLD OUT once it's been drawn / closed / settled (the draw allocated its slots).
+  const soldOut = status === "closed" || status === "settled" || Boolean(drawnAt);
+  const comingSoon = status === "coming_soon";
 
   // Pick the photo for the selected finish, falling back to the default.
   const photo =
@@ -76,8 +87,13 @@ export default function ItemPanel({
               sizes="(max-width: 1024px) 90vw, 40vw"
               className="object-contain p-10"
             />
-            <span className="pill absolute left-3 top-5">
-              {status.replace("_", " ")}
+            <span
+              className={
+                "pill absolute left-3 top-5 " +
+                (soldOut ? "bg-ink text-cream" : open ? "bg-lime" : "")
+              }
+            >
+              {soldOut ? "SOLD OUT" : status.replace("_", " ")}
             </span>
           </div>
         </div>
@@ -136,9 +152,33 @@ export default function ItemPanel({
             </div>
           )}
 
-          {/* Inline World ID entry → draw → purchase */}
-          {open ? (
-            <WorldIdEntry dropId={dropId} variantId={variant?.id ?? null} />
+          {/* Lifecycle-driven block: launch countdown (coming_soon) → entry timer + World ID
+              entry (open) → SOLD OUT (drawn/closed). All driven by the REAL M11 clock. */}
+          {soldOut ? (
+            <div className="brutal-lime flex flex-col gap-1 p-5">
+              <div className="display text-4xl sm:text-5xl">SOLD OUT</div>
+              <p className="text-sm font-bold uppercase">
+                This drop was drawn — one verified human won the slot.
+              </p>
+            </div>
+          ) : comingSoon ? (
+            <div className="flex flex-col gap-3">
+              {opensAt ? (
+                <LaunchTimer target={opensAt} mode="launch" />
+              ) : (
+                <div className="brutal flex items-center gap-2 px-5 py-4 font-extrabold uppercase text-muted-foreground">
+                  Coming soon
+                </div>
+              )}
+              <p className="text-sm font-medium text-muted-foreground">
+                Entry opens automatically when the clock hits zero — no refresh needed.
+              </p>
+            </div>
+          ) : open ? (
+            <div className="flex flex-col gap-3">
+              {closesAt && <LaunchTimer target={closesAt} mode="entry" />}
+              <WorldIdEntry dropId={dropId} variantId={variant?.id ?? null} />
+            </div>
           ) : (
             <div className="brutal flex items-center gap-2 px-5 py-4 font-extrabold uppercase text-muted-foreground">
               Not open for entry

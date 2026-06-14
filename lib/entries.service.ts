@@ -2,9 +2,9 @@
 // agent humanId) must go through `insertEntry` so it hits UNIQUE(drop_id, human_key) —
 // that constraint IS the Sybil guarantee (RALPH_GUIDE.md §7). Never raw-insert around it.
 
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { entries, type Entry } from "@/lib/db/schema";
+import { entries, orders, type Entry, type Order } from "@/lib/db/schema";
 
 export class AlreadyEnteredError extends Error {
   constructor(public readonly dropId: string) {
@@ -98,6 +98,31 @@ export async function insertAgentEntry(input: InsertAgentEntryInput): Promise<En
     if (isUniqueViolation(err)) throw new AlreadyEnteredError(input.dropId);
     throw err;
   }
+}
+
+// Fetch a single entry by id (e.g. the /win/[entryId] winner page). Returns undefined if
+// the id doesn't exist (page → 404).
+export async function getEntryById(entryId: string): Promise<Entry | undefined> {
+  const [row] = await db
+    .select()
+    .from(entries)
+    .where(eq(entries.id, entryId))
+    .limit(1);
+  return row;
+}
+
+// The confirmed settlement order for a purchased entry (most recent), so the winner page can
+// show the real tx hash + explorer link. Null if none recorded yet.
+export async function getConfirmedOrderForEntry(
+  entryId: string,
+): Promise<Order | undefined> {
+  const [row] = await db
+    .select()
+    .from(orders)
+    .where(and(eq(orders.entryId, entryId), eq(orders.status, "confirmed")))
+    .orderBy(desc(orders.createdAt))
+    .limit(1);
+  return row;
 }
 
 // Find this human's entry in a drop, by human_key (works for both nullifier and humanId since
