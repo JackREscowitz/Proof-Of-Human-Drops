@@ -18,7 +18,16 @@
 - **M8 — MCP purchase tool + e2e agent settlement:** ACCEPTED
 - **M9 — Web purchase UI + pop-brutalist design pass:** ACCEPTED
 - **M10 — Demo hardening + reset choreography + dry run:** ACCEPTED
-- **🎉 PROJECT COMPLETE — all M0–M10 accepted; Definition of Done met.**
+- **🎉 ORIGINAL SCOPE COMPLETE — all M0–M10 accepted; Definition of Done met.**
+- **M11 — Real time-driven lifecycle (autonomous open + draw):** ACCEPTED
+- **M12 — Timer UI + SOLD OUT + winner page:** NOT STARTED
+- **M13 — Live demo tooling + runbook (1:30 / 2h launch + practice harness):** NOT STARTED
+
+> **Extension milestones added 2026-06-14** (see `PRD.md` §3b). Real, time-driven timers — no
+> smoke and mirrors: set a drop to launch in 1:30 and the server opens + draws on its own clock;
+> the 2h NVIDIA raffle really fires if you wait. World ID scan + agent calls stay LIVE (done by a
+> human in the demo). **The current milestone is the first one above marked NOT STARTED (M11).**
+> Build order is strict: M10 → M11 → M12 → M13.
 
 ---
 
@@ -1182,3 +1191,135 @@ M10_ACCEPTANCE: PASS (0 failures)
   (`await ctx.params`); `@/lib/db` is a lazy proxy; build must pass `env -u DATABASE_URL pnpm build`;
   Drizzle unique errors on `err.cause.code`; tsconfig ES2017 → `BigInt(0)` not `0n`; Railway Metal
   builder rejects `# syntax=` / BuildKit cache mounts; tsx scripts need an async `main()`.
+
+---
+
+## 2026-06-14 — iter-009 — M11 Real time-driven lifecycle (autonomous open + draw)
+**Status of M11:** ACCEPTED
+
+**Did:** (new branch `build/m11-lifecycle` off `main` — carries the prior uncommitted UI/seed
+work too; M0–M10 still live on `build/m3-admin-plane`, none merged to main)
+- **`lib/lifecycle.service.ts`** — the transition engine. `applyDueTransitions(now?)`:
+  - `coming_soon` with `opens_at <= now` → `open` (conditional UPDATE `WHERE status='coming_soon'`
+    elects one caller; concurrent callers see 0 rows and skip).
+  - `open` with `closes_at <= now` and `drawn_at IS NULL` → **atomic draw guard** then `runDraw`.
+    The guard is a conditional UPDATE `SET drawn_at=now WHERE id=? AND status='open' AND drawn_at IS NULL`
+    `RETURNING id` — whoever updates a row OWNS the draw; everyone else (other ticks, lazy reads,
+    extra instances) gets 0 rows and no-ops ⇒ **no double-draw**. If `runDraw` then throws, the
+    claim is rolled back (`drawn_at=null`) so a later tick can retry.
+  - Reuses the **M6 `runDraw` path VERBATIM** (CSPRNG when no seed) — only the *trigger* changed
+    from an admin call to the wall clock. Never throws (per-section try/catch + per-drop).
+  - **`dropTiming(drop, now?)`** helper → `{ phase, opensAt, closesAt, secondsUntilOpen,
+    secondsUntilClose }` for the M12 countdowns (phases: coming_soon | open | closing | drawn).
+- **`lib/lifecycle.ticker.ts`** — `startLifecycleTicker()`: nodejs-only `setInterval`
+  (`LIFECYCLE_TICK_MS`, default **5000ms**) running `applyDueTransitions()`. Singleton-guarded on
+  globalThis, re-entrancy-guarded (skips a tick if the prior one is still running), `handle.unref()`.
+  Logs `opened`/`drew` lines. **This is what makes "wait 2h tab-closed and it still fires" literally
+  true** (one Railway web instance — genuinely autonomous for this demo, not a distributed scheduler;
+  the atomic guard makes it safe even if scaled).
+- **`instrumentation.ts`** (repo root) — Next 16 `register()` hook. Starts the ticker ONLY when
+  `NEXT_RUNTIME === "nodejs"` AND `DATABASE_URL` is set, so `next build`'s page-data collection
+  (which runs WITHOUT DATABASE_URL) never connects or draws. Dynamic-imports the ticker. Wrapped so
+  a failure can't block server readiness. (Doc read: `node_modules/next/dist/docs/01-app/
+  03-api-reference/03-file-conventions/instrumentation.md`.)
+- **Lazy trigger (on read):** `applyDueTransitions()` at the top of **`listDrops()`** (via a
+  **dynamic** `import()` — a static import would create the cycle lifecycle→draw→drops) and in
+  **`GET /api/drops/:id/entry-status`** (static import; no cycle there). So any page load / poll
+  reflects the true current state; the entry-status poll that crosses `closes_at` sees the drawn
+  state immediately even before the next ticker fire.
+- **`scripts/m11-acceptance.ts`** — the no-intervention gate (throwaway drops, self-cleaning):
+  creates a `coming_soon` drop (opens_at 5s in the past) + an `open` drop (closes_at = now+CLOSE,
+  2 entries, **no seed**), **sleeps WAIT seconds doing NOTHING** (no admin call, no listDrops, no
+  entry-status, no applyDueTransitions), then asserts via **direct DB reads** (getDrop / raw select
+  — these DON'T trigger transitions) that the autonomous TICKER opened + drew them, and a winner
+  settles a real on-chain USDC tx on 4801 (verified by `getTransactionReceipt`). Env-tunable:
+  `M11_CLOSE_SECONDS` (def 20), `M11_WAIT_SECONDS` (def CLOSE+25).
+
+**Commit:** `3618115` (engine + ticker + instrumentation + lazy triggers + acceptance; also carries
+the `resetDemo` rewrite for the now-both-live demo drops). Deployed:
+`railway up --ci --service 9f74a937…` → "Deploy complete" (exit 0); newest deployment
+**`6033c389-5b35-4c92-97ed-21cbafca37e2` SUCCESS**.
+
+**Acceptance test (literal output — run TWICE: local standalone server, then LIVE Railway ticker):**
+- **Local** (standalone `node server.js`, `LIFECYCLE_TICK_MS=3000`, CLOSE=8 WAIT=18):
+  `M11_ACCEPTANCE: PASS (0 failures)`; real tx
+  `0xdd2b7c716953b8b302f52ce0c1ab02802474f5a39c6b1b9684325fb12d124145` (block 30435272). Server log:
+  `[lifecycle.ticker] opened drop "__m11_open_…"` + `drew drop "__m11_draw_…" — 1 winner(s), 1 loser(s)`.
+- **LIVE Railway** (deployed server's own ticker @5000ms; my local script ONLY wrote state + slept,
+  CLOSE=25 WAIT=45):
+  ```
+  OK   [A] coming_soon → open fired AUTONOMOUSLY (no admin call)
+  OK   [B] open → closed fired AUTONOMOUSLY at closes_at
+  OK   [B] drawn_at stamped by the autonomous draw
+  OK   [B] exactly total_slots (1) winner — got 1
+  OK   [B] the other entry is a loser — got 1
+  OK   [B] real tx hash is a valid 32-byte hash
+  OK   [B] amount == 10 USDC (drop price)
+  OK   [B] winner entry → 'purchased'
+  OK   [B] on-chain receipt status == success (block 30435376)
+  OK   [B] orders row confirmed + linked
+  M11_ACCEPTANCE: PASS (0 failures)
+  ```
+  Real tx `0x075908558c3320c6ace1653df1af9fdd2a4e1793fdf5a38cf4c78c0af0506c46`
+  (https://sepolia.worldscan.org/tx/0x075908558c3320c6ace1653df1af9fdd2a4e1793fdf5a38cf4c78c0af0506c46 ·
+  block 30435376, status success).
+  **Live server logs confirm the DEPLOYED ticker did it** (not my script):
+  `[lifecycle.ticker] opened drop "__m11_open_1781418124702" (facf1487-…)` +
+  `drew drop "__m11_draw_1781418125081" (66a72832-…) — 1 winner(s), 1 loser(s)`.
+- Build/typecheck: `pnpm typecheck` PASS; **`env -u DATABASE_URL pnpm build` PASS** (instrumentation
+  correctly no-ops at build — ticker never starts without DATABASE_URL). Live `/api/health`
+  `{"ok":true}`, `/api/health/db` `{"db":"ok"}`.
+- **Seeded demo state intact** after the run: `GET /api/drops` → Mac Mini open ($10, 2 var),
+  GeForce RTX 5090 open ($50, 1 var). Both have `opensAt/closesAt = null` (no timers yet — M13's
+  `launch-demo.ts` sets the real 1:30/2h timers; M11 is the engine that HONORS them).
+
+**Deviations from PRD:** none material.
+- Lazy trigger in `listDrops()` uses a **dynamic** `import("@/lib/lifecycle.service")` rather than a
+  top-level import — required to avoid the static require cycle `drops → lifecycle → draw → drops`.
+  Same effect (runs before the read), no cycle. Documented in-code.
+- The atomic draw guard PRE-stamps `drawn_at` in the claim UPDATE; `runDraw` also stamps it (harmless
+  re-stamp). The claim is what makes election atomic; runDraw stays untouched (M6 contract preserved).
+- No new env vars required (ticker interval optional via `LIFECYCLE_TICK_MS`, defaults 5000).
+
+**NOTES FOR NEXT ITERATION (start M12 — Timer UI + SOLD OUT + winner page):**
+- **The lifecycle ENGINE is done & live.** M12 is the UI layer that VISUALIZES it. The data hooks
+  exist: **`dropTiming(drop)`** in `lib/lifecycle.service.ts` returns `{ phase, opensAt, closesAt,
+  secondsUntilOpen, secondsUntilClose }`. `entry-status` route already returns `status`/`drawnAt`/
+  `purchaseDeadline` and applies due transitions on read.
+- ‼️ **There is a LOT of uncommitted UI groundwork already on this branch** (carried from before):
+  a full scroll-deck landing (`components/drop-deck.tsx`, `item-panel.tsx`, `hero-panel.tsx`,
+  `scroll-deck.tsx`, `scroll-cue.tsx`, `scroll-to-button.tsx`, `hero-model-stage*.tsx`), an
+  `app/[slug]/page.tsx` deep-link route, `lib/drops.presentation.ts` (slug/photo/spec display
+  metadata keyed by drop name), a rewritten `app/page.tsx`, product images under `public/products/`
+  + 3D models under `public/models/` + `public/draco/`, and screenshot scripts (`scripts/shot-*.mjs`).
+  These are **NOT yet committed** (and not part of the M11 commit `3618115` except `drops.service.ts`
+  + `seed.ts`/`page.tsx` already-modified bits). **M12 should fold these in**: commit them, then add
+  the timer components (`components/launch-timer.tsx` client countdown calling `router.refresh()` on
+  zero-cross), wire SOLD OUT into `item-panel.tsx` (currently it shows a flat "Not open for entry"),
+  and build `app/win/[entryId]/page.tsx` (the screenshottable winner page; reuse
+  `POST /api/drops/:id/purchase` which resolves the winner wallet server-side). Thread
+  `opensAt/closesAt/drawnAt` through `drop-deck.tsx` → `item-panel.tsx`.
+- **Screenshots for M12 use NIX Chromium** (PRD M12 step 4 replaces the M9 apt-.deb/LD_LIBRARY_PATH
+  hack): `nix build nixpkgs#chromium`; point playwright-core's `executablePath` at
+  `${chromium}/bin/chromium` (resolve via `nix eval --raw nixpkgs#chromium.outPath` or
+  `nix build --print-out-paths`; honor a `CHROMIUM_BIN` override). Capture
+  `docs/screenshots/m12-winner.png` in a `won` state.
+- **Wallets now** (post-M11, 2 acceptance settlements of 10 USDC each, both to agent1 receiver):
+  re-check with `pnpm exec tsx scripts/check-balances.ts`. Pre-M11 they were human 34 / agent2 10 /
+  agent1 76 USDC, all ~0.0099 ETH. M11 ran 2× 10-USDC FROM human → human now ~14 USDC. Keep the
+  WINNER wallet (web=human, agent=agent2) ≥10 USDC + gas for M12's winner-page real purchase. Faucets:
+  USDC https://faucet.circle.com (Worldchain Sepolia ~20/2h), gas
+  https://www.alchemy.com/faucets/world-chain-sepolia.
+- **Reusable IDs unchanged:** app service `9f74a937-4034-4767-8fd0-67115833c31d`, Postgres
+  `5a9197a2-96c1-44d2-9305-dbbb3204cbc1`, live `https://worldcoinapp-production.up.railway.app`,
+  MCP `…/api/mcp` (5 tools). Mac Mini `c27f512e-af27-4963-88d3-a54bdab108a6` (open, action
+  `drop_c27f512e-…`); GeForce RTX 5090 `aafd0d75-d313-4aec-8b26-e558a6ffd9ba` (open, action
+  `drop_aafd0d75-…`, reused from the old Mac Studio row). ADMIN_SECRET + WORLD_* + DEMO_* +
+  WORLD_CHAIN_SEPOLIA_RPC on Railway. Optional `LIFECYCLE_TICK_MS` (def 5000) is set nowhere = 5s.
+  Redeploy: `railway up --ci --service 9f74a937… -m "<msg>"`.
+- ⚠️ Carryover gotchas (all still apply): Next 16 route `params` is a Promise (`await ctx.params`);
+  `@/lib/db` is a lazy proxy; **build must pass `env -u DATABASE_URL pnpm build`** (the ticker MUST
+  stay nodejs+DATABASE_URL-guarded — never run at build); Drizzle unique errors on `err.cause.code`;
+  tsconfig ES2017 → `BigInt(0)` not `0n`; Railway Metal builder rejects `# syntax=` / BuildKit cache
+  mounts; tsx scripts need an async `main()`. Branch: **`build/m11-lifecycle`** (off main; carries
+  the uncommitted UI groundwork — M12 commits it). M0–M10 are on `build/m3-admin-plane`.
