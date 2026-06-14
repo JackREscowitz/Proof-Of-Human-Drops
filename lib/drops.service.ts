@@ -97,6 +97,17 @@ export interface DropWithVariants extends Drop {
 }
 
 export async function listDrops(): Promise<DropWithVariants[]> {
+  // M11 lazy trigger (on read): apply any time-due transitions BEFORE reading, so every page
+  // load / poll reflects the true current state (a drop past opens_at shows open; past
+  // closes_at shows drawn). Dynamic import avoids a static cycle (lifecycle → draw → drops).
+  // Best-effort: applyDueTransitions never throws, but guard so a read never fails on it.
+  try {
+    const { applyDueTransitions } = await import("@/lib/lifecycle.service");
+    await applyDueTransitions();
+  } catch (err) {
+    console.error("[drops.listDrops] lazy transition error:", err);
+  }
+
   const allDrops = await db.select().from(drops).orderBy(drops.createdAt);
   if (allDrops.length === 0) return [];
   const allVariants = await db
@@ -212,43 +223,44 @@ export async function resetDrop(
   return result!; // existence guaranteed by getDropOrThrow above
 }
 
-// Full demo reset choreography (M10) — return the WHOLE system to "Act 1" state in one call,
-// scoped to the seeded demo drops so no other data is touched (RALPH_GUIDE §8). It:
-//   1. resets the live drop (Mac Mini): clear its entries+orders, re-open it, clear drawn_at,
-//      and — unlike the per-drop reset — also CLEAR the draw_seed (a fresh demo re-stages it),
-//   2. ensures the coming-soon drop (Mac Studio) is back in `coming_soon`.
-// Idempotent: runnable back-to-back with no manual DB surgery (the M10 acceptance bar).
+// Full demo reset choreography (M10 / M11) — return the WHOLE system to "Act 1" state in one
+// call, scoped to the seeded demo drops so no other data is touched (RALPH_GUIDE §8).
+// Both products (Mac Mini + GeForce RTX 5090) are now live OPEN drops, so a reset clears each
+// one's entries+orders, re-opens it, clears drawn_at, and CLEARS the draw_seed (a fresh demo
+// re-stages it). Idempotent: runnable back-to-back with no manual DB surgery.
 export interface ResetDemoResult {
-  live: DropWithVariants; // the re-opened live drop (Mac Mini)
-  comingSoon: DropWithVariants | null; // the coming-soon drop (Mac Studio), if present
+  live: DropWithVariants; // the primary live drop (Mac Mini)
+  others: DropWithVariants[]; // every other seeded demo drop that was reset (e.g. RTX 5090)
+  // Back-compat: the previous coming-soon drop slot. Null now that both items are live.
+  comingSoon: DropWithVariants | null;
 }
 
 export async function resetDemo(opts: {
   liveDropName?: string;
-  comingSoonDropName?: string;
+  otherDropNames?: string[];
 } = {}): Promise<ResetDemoResult> {
   const liveName = opts.liveDropName ?? "Mac Mini";
-  const comingSoonName = opts.comingSoonDropName ?? "Mac Studio";
+  const otherNames = opts.otherDropNames ?? ["GeForce RTX 5090"];
 
   const liveDrop = await findDropByName(liveName);
   if (!liveDrop) throw new NotFoundError(`live demo drop "${liveName}" not found — run seed first`);
 
-  // Reset the live drop's data and re-open it; also clear the staging seed for a clean slate.
+  // Reset the primary live drop's data and re-open it; clear the staging seed for a clean slate.
   await resetDrop(liveDrop.id, { reopen: true, countdownSeconds: null });
   await setSeed(liveDrop.id, null);
   const live = (await getDropWithVariants(liveDrop.id))!;
 
-  // Put the coming-soon item back to coming_soon (it may have been flipped open mid-demo).
-  let comingSoon: DropWithVariants | null = null;
-  const csDrop = await findDropByName(comingSoonName);
-  if (csDrop) {
-    if (csDrop.status === "open") {
-      await transitionStatus(csDrop.id, "coming_soon");
-    }
-    comingSoon = (await getDropWithVariants(csDrop.id))!;
+  // Reset every other seeded demo drop the same way (they're all live now).
+  const others: DropWithVariants[] = [];
+  for (const name of otherNames) {
+    const d = await findDropByName(name);
+    if (!d) continue;
+    await resetDrop(d.id, { reopen: true, countdownSeconds: null });
+    await setSeed(d.id, null);
+    others.push((await getDropWithVariants(d.id))!);
   }
 
-  return { live, comingSoon };
+  return { live, others, comingSoon: null };
 }
 
 // Flip a coming_soon item to open (or back). Used for the demo "second item" reveal.

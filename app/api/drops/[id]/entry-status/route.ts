@@ -12,6 +12,7 @@ import { db } from "@/lib/db";
 import { entries } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { getDrop } from "@/lib/drops.service";
+import { applyDueTransitions } from "@/lib/lifecycle.service";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +20,13 @@ type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(req: NextRequest, ctx: Ctx) {
   const { id } = await ctx.params;
+
+  // M11 lazy trigger (on read): the web winner flow polls this. Applying due transitions here
+  // means the draw fires the moment closes_at passes — the poll that crosses the deadline sees
+  // the drawn state (won/lost) with no admin action. Best-effort; never blocks the read.
+  await applyDueTransitions().catch((err) =>
+    console.error("[entry-status] lazy transition error:", err),
+  );
   const entryId = req.nextUrl.searchParams.get("entryId");
   if (!entryId) {
     return Response.json({ error: "entryId query param required" }, { status: 400 });
