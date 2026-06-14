@@ -188,7 +188,12 @@ Use when you genuinely cannot proceed without a person: a faucet is rate-limited
 The loop will then **stop and alert the human** (terminal banner + desktop notification). The human resolves it, deletes `BLOCKED.md`, and re-runs `./ralph.sh`. So: if `BLOCKED.md` exists, a human hasn't cleared it yet — don't recreate it silently; check whether the blocker is actually resolved.
 
 ### `RALPH-PROJECT-COMPLETE` — everything is done
-Emit only when **every** milestone M0–M10 is `ACCEPTED` in `PROGRESS.md` and the PRD's "Definition of done" checklist is fully satisfied. The loop exits success.
+Emit only when **every** milestone **M0–M13** is `ACCEPTED` in `PROGRESS.md` and the PRD's "Definition of done" checklist (§5, which now includes M11–M13) is fully satisfied. The loop exits success.
+
+> ⚠️ The original M0–M10 scope is already accepted, but **M11–M13** (real time-driven timers,
+> winner page + SOLD OUT, live demo tooling — `PRD.md` §3b) were added afterward. Do **not** emit
+> `RALPH-PROJECT-COMPLETE` while any of M11–M13 is still `NOT STARTED`/`in_progress`. The current
+> milestone is the first one in the `PROGRESS.md` glance table not marked `ACCEPTED`.
 
 ### Neither applies
 Just finish your iteration normally. The loop spawns a fresh one and you continue from `PROGRESS.md`. **Prefer this** — don't over-eagerly block. Only block on a true human-only dependency, and only complete when truly complete.

@@ -20,7 +20,7 @@
 - **M10 — Demo hardening + reset choreography + dry run:** ACCEPTED
 - **🎉 ORIGINAL SCOPE COMPLETE — all M0–M10 accepted; Definition of Done met.**
 - **M11 — Real time-driven lifecycle (autonomous open + draw):** ACCEPTED
-- **M12 — Timer UI + SOLD OUT + winner page:** NOT STARTED
+- **M12 — Timer UI + SOLD OUT + winner page:** ACCEPTED
 - **M13 — Live demo tooling + runbook (1:30 / 2h launch + practice harness):** NOT STARTED
 
 > **Extension milestones added 2026-06-14** (see `PRD.md` §3b). Real, time-driven timers — no
@@ -1323,3 +1323,130 @@ the `resetDemo` rewrite for the now-both-live demo drops). Deployed:
   tsconfig ES2017 → `BigInt(0)` not `0n`; Railway Metal builder rejects `# syntax=` / BuildKit cache
   mounts; tsx scripts need an async `main()`. Branch: **`build/m11-lifecycle`** (off main; carries
   the uncommitted UI groundwork — M12 commits it). M0–M10 are on `build/m3-admin-plane`.
+
+---
+
+## 2026-06-14 — iter-010 — M12 Timer UI + SOLD OUT state + dedicated winner page
+**Status of M12:** ACCEPTED
+
+**Did:** (same branch `build/m11-lifecycle`, continued after M11)
+- **Committed the M12 UI base** (`c67f7db`) — folded in the previously-uncommitted scroll-deck
+  groundwork the M11 notes flagged: `drop-deck`/`scroll-deck`/`hero-panel`/`item-panel`/
+  `scroll-cue`/`scroll-to-button`/`hero-model-stage*`, `app/[slug]` deep-link route,
+  `lib/drops.presentation.ts`, the rewritten `app/page.tsx`, `lib/seed.ts` (upserts the 2 live
+  drops in place — preserves UUID + World ID action), self-hosted assets (`public/models`,
+  `public/draco`, `public/products`), `@google/model-viewer` dep, and the `shot-*` scripts.
+  **Gitignored** the heavy raw source dirs `3dmodels/` (35M), `5090/`, `macminis/` — not
+  referenced by code (the app serves processed assets from `public/`).
+- **`components/launch-timer.tsx`** (client) — live countdown. `mode="launch"` (coming_soon →
+  opens_at, "LAUNCHES IN") / `mode="entry"` (open → closes_at, "ENTRIES CLOSE IN"). Format
+  `Hh MMm` ≥1h (the 2h RTX drop), `MM:SS` <1h (the 90s Mac Mini). On **zero-cross calls
+  `router.refresh()`** (once, via a ref guard) so the now-updated real M11 server state shows
+  (open / SOLD OUT / winner) the instant the clock hits zero — the ticker would do it within ~5s
+  anyway; this just makes the UI react immediately.
+- **`components/item-panel.tsx`** — lifecycle-driven entry block: launch timer (coming_soon) →
+  entry timer + `WorldIdEntry` (open) → **bold lime SOLD OUT block** + black "SOLD OUT" pill on
+  the photo (closed/settled/drawn). `drop-deck.tsx` now threads `opensAt`/`closesAt`/`drawnAt`
+  (ISO strings) through; `hero-panel.tsx` shows a small "next drop" launch countdown (soonest
+  upcoming `opens_at`).
+- **`app/win/[entryId]/page.tsx`** (server component) — the screenshottable winner page. States
+  read from the REAL entry status: `won` (YOU WON ✦ + product/finish + PURCHASE CTA), `purchased`
+  (PURCHASED ✓ + amount + real explorer tx link + hash, read via `getConfirmedOrderForEntry`),
+  `lost`/`expired`/`pending` (honest), **bad-uuid → 404** (regex-guarded so a malformed id doesn't
+  500 on the DB). Reuses **`POST /api/drops/:id/purchase`** which resolves the winner's wallet
+  SERVER-SIDE from `entry.wallet_address` → works for **human OR agent** winner. Client purchase
+  island `components/winner-purchase.tsx`. `world-id-entry.tsx` inline win state now links to
+  `/win/[entryId]` (both surfaces converge on one page).
+- **`lib/entries.service.ts`** — `getEntryById` + `getConfirmedOrderForEntry` (the tx for the
+  purchased state).
+- **`scripts/shot-winner.mjs`** — nix-Chromium screenshot (PRD M12 step 4; resolved
+  `nix build nixpkgs#chromium --print-out-paths` → `…/bin/chromium`, passed via
+  `CHROMIUM_BIN`/`executablePath`). **`scripts/m12-acceptance.ts`** — self-cleaning, real on-chain
+  settlement.
+
+**Commits:** `c67f7db` (M12 base) + `be70b8d` (M12 timer UI + SOLD OUT + winner page).
+Deployed: `railway up --ci --service 9f74a937…` → "Deploy complete"; newest deployment
+**`2adafed8-3f10-44c7-93df-a858adbe6850` SUCCESS**.
+
+**Acceptance test (literal output — run LOCAL standalone, then LIVE Railway):**
+- **LIVE** (`BASE_URL=https://worldcoinapp-production.up.railway.app pnpm exec tsx scripts/m12-acceptance.ts`):
+  ```
+  OK   [A] /win/<bad-uuid> → 404 (no 500 crash)
+  OK   [A] lost entry → NOT SELECTED
+  OK   [A] pending entry → YOU'RE IN
+  OK   [A] won entry → YOU WON
+  OK   [A] won page shows product + photo
+  OK   [B] purchase route → 200 ok
+  OK   [B] real 32-byte tx hash
+  OK   [B] entry → purchased
+  OK   [B] on-chain receipt success (block 30435935)
+  OK   [B] winner page now shows PURCHASED + tx
+  OK   [C] auto-drew on the clock → closed (SOLD OUT)
+  OK   [C] drawn_at stamped by the autonomous draw (no admin call)
+  M12_ACCEPTANCE: PASS (0 failures)
+  ```
+  **Live winner-page settlement tx** `0x19a104eaff5dccb7d7ffad4b5ab59005c6948867f67869447e02884fc352660f`
+  (https://sepolia.worldscan.org/tx/0x19a104eaff5dccb7d7ffad4b5ab59005c6948867f67869447e02884fc352660f ·
+  block 30435935, receipt success). Local run earlier: PASS, tx `0x802a5ed3…` (block 30435790).
+- **Manual winner-page purchase** (real flow, local): tx
+  `0x8767ea388e53be2a0d12f4a2f09e2aab528f2b1ea90331f2547476ebe90fc533` (block 30435722, success) —
+  the `/win/[entryId]` page then rendered PURCHASED ✓ + explorer link.
+- **Screenshots committed:** `docs/screenshots/m12-winner.png` (won state, nix Chromium — product
+  card + lime "YOU WON ✦" + PURCHASE CTA) and `docs/screenshots/m12-soldout.png` (the item panel in
+  SOLD OUT — black pill + bold lime SOLD OUT block). The full launch-timer→entry-timer→SOLD OUT
+  progression was verified in the real UI (deep-link screenshots) and via the DB reaching `closed`
+  autonomously.
+- Build/typecheck: `pnpm typecheck` PASS; **`env -u DATABASE_URL pnpm build` PASS** (`/win/[entryId]`
+  in the route list); M12 files lint-clean. Live `/api/health` `{"ok":true}`, `/api/health/db`
+  `{"db":"ok"}`, `/win/not-a-uuid` → 404.
+- **Post-run state intact:** live `GET /api/drops` → exactly 2 seeded drops (Mac Mini open, RTX 5090
+  open, both `drawnAt=null`) — no throwaways leaked. Wallets: Human 24 USDC, Agent2 10, Agent1 86,
+  all ~0.0099 ETH (topped Human +40 from Agent1 mid-run via `/api/admin/test-transfer` so the
+  web-winner path stays funded; tx `0x21ff3df7…`).
+
+**Deviations from PRD:** none material.
+- Added a **uuid regex guard** in the winner page (`/win/<bad-uuid>` → 404 instead of a 500 from the
+  DB's invalid-uuid-syntax error). Not called out in the PRD but obviously correct.
+- The throwaway drops the acceptance creates are NAMED "Mac Mini" so the winner page picks up the
+  real product photo/accent for a representative screenshot — they're brand-new UUIDs, deleted at the
+  end, and never appear on the deck (the deck's `drops.find` returns the first/seeded match), so the
+  live seeded Mac Mini + its registered World ID action are untouched.
+- `disable react-hooks/purity` on the one `Date.now()` in `drop-deck.tsx` (an async SERVER component
+  — renders once per request; the client-purity rule is a false positive for RSCs).
+
+**NOTES FOR NEXT ITERATION (start M13 — Live demo tooling + runbook):**
+- **M13 is the LAST milestone.** When it's ACCEPTED, the whole project is done (M0–M13) → emit
+  `RALPH-PROJECT-COMPLETE`. M11 (engine) + M12 (UI) are both live; M13 wires the real 1:30/2h timers
+  and rewrites the runbook around the live flow.
+- **Build `scripts/launch-demo.ts`** — sets timestamps ONLY (the M11 clock does the rest; the script
+  opens/draws nothing): Mac Mini `status=open, opens_at=now, closes_at=now+90s, NO seed` (truly
+  random); GeForce RTX 5090 `status=coming_soon, opens_at=now+2h, closes_at=now+2h+5m` (configurable
+  via `MAC_MINI_SECONDS`/`RTX_HOURS`/`RTX_ENTRY_SECONDS`; optional off-by-default `--seed-human` to
+  stage a guaranteed human win). Prints wall-clock open/close times + live URLs. ⚠️ The RTX 5090 row
+  is currently `open` (M11 left both drops open with null timers) — `launch-demo.ts` must set it
+  back to `coming_soon` with the +2h `opens_at` so the launch timer shows. Mac Mini → open + 90s.
+- **`scripts/practice-agents.ts`** — OPTIONAL solo-rehearsal harness, explicitly NOT used in the live
+  demo. agent1+agent2 call the **live MCP** `enter_draw(Mac Mini)` with real AgentKit sigs (reuse the
+  `m10-acceptance.ts` MCP-client pattern), wait for the real `closes_at`, `check_status` → print
+  WON/LOST + settlement tx. Label "practice only."
+- **Rewrite `DEMO_RUNBOOK.md`** around the real live arc (Act1 run launch-demo → timers set; Act2
+  presenter scans World ID on their phone, enters live; Act3 presenter asks their real agents via the
+  MCP connector; Act4 everyone watches the real countdown hit zero → server draws itself → winner
+  page / SOLD OUT appear; Act5 winner purchases — in-browser on `/win/[id]` or agent via MCP
+  `purchase`). Keep the 2h NVIDIA raffle as the "leave it running, it really fires" proof, the
+  practice harness, the `reset-demo` choreography, and the Track-A qualification mapping.
+- **Reusable hooks for M13:** `dropTiming(drop)` (lifecycle.service) for any timing display;
+  `/win/[entryId]` is the convergence page for both human + agent winners; `POST /api/drops/:id/purchase`
+  resolves the wallet server-side. The MCP at `…/api/mcp` (5 tools) + the AgentKit-signed client
+  pattern live in `scripts/m10-acceptance.ts` / `scripts/m8-acceptance.ts`.
+- **Reusable IDs unchanged:** app service `9f74a937-4034-4767-8fd0-67115833c31d`, Postgres
+  `5a9197a2-96c1-44d2-9305-dbbb3204cbc1`, live `https://worldcoinapp-production.up.railway.app`. Mac
+  Mini `c27f512e-…` (open, action `drop_c27f512e-…`, $10); GeForce RTX 5090 `aafd0d75-…` (open,
+  action `drop_aafd0d75-…`, $50). ADMIN_SECRET + WORLD_* + DEMO_* on Railway. nix Chromium for
+  screenshots: `nix build nixpkgs#chromium --no-link --print-out-paths` → set `CHROMIUM_BIN`.
+  Redeploy: `railway up --ci --service 9f74a937… -m "<msg>"`.
+- ⚠️ Carryover gotchas (all still apply): Next 16 route `params` is a Promise; `@/lib/db` is a lazy
+  proxy; **build must pass `env -u DATABASE_URL pnpm build`**; Drizzle unique errors on
+  `err.cause.code`; tsconfig ES2017 → `BigInt(0)` not `0n`; Railway Metal builder rejects `# syntax=`
+  / BuildKit cache mounts; tsx scripts need an async `main()`. Branch: **`build/m11-lifecycle`** (off
+  main; nothing merged to main yet — M0–M10 are on `build/m3-admin-plane`).

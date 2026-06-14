@@ -53,7 +53,7 @@ A drops storefront where scarce stock (a Mac Mini, instant-sellout) is allocated
 
 ## 3. Milestones
 
-Each milestone is sized to be completable and verifiable in one or a few loop iterations. The dependency chain is: **M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9 → M10**.
+Each milestone is sized to be completable and verifiable in one or a few loop iterations. The dependency chain is: **M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9 → M10** — then the post-completion extension milestones **M10 → M11 → M12 → M13** (see §3b).
 
 ---
 
@@ -363,6 +363,184 @@ Each milestone is sized to be completable and verifiable in one or a few loop it
 
 ---
 
+## 3b. Post-completion extension milestones (M11–M13)
+
+> Added after the M0–M10 project was completed and accepted. These make the drop **timers
+> genuinely time-driven by the server's own clock — no smoke and mirrors.** Set a drop to launch
+> in 1:30 and walk away: the server opens entries and runs the draw when the clock hits zero, with
+> the browser closed and nothing nudging it. Wait the full 2h for the NVIDIA raffle and it really
+> opens and really draws. On-chain settlement is real USDC on chain 4801.
+>
+> **The World ID scan and the agent calls are performed LIVE, by a human, in front of the judges**
+> — that is the product, not something to automate. The demo scripts only (a) set the real
+> timestamps and (b) provide an *optional* solo-practice harness for the agent side; they never
+> fake the human or the agents in the real demo.
+>
+> Dependency chain continues: **M10 → M11 → M12 → M13.** Build order stays strict.
+
+---
+
+### M11 — Real time-driven lifecycle (autonomous open + draw)
+**Depends on:** M10.
+**Goal:** Drops transition on the real clock with zero intervention — `coming_soon → open` when
+`opensAt` passes, and `open → closed` **with the draw actually running** when `closesAt` passes.
+The winner is **truly random (CSPRNG, no seed)** over whoever actually entered. The same draw,
+settlement, and dedupe code proven in M6/M8/M9 is reused verbatim — only the *trigger* changes
+from an admin call to the wall clock.
+
+**Build steps**
+1. `lib/lifecycle.service.ts` → `applyDueTransitions()`:
+   - For each drop: `coming_soon` with `opens_at <= now` → flip to `open`.
+   - `open` with `closes_at != null` and `closes_at <= now` → run `runDraw(dropId)` (the existing
+     M6 path: marks `closed`, picks a CSPRNG winner, opens the purchase window).
+   - **Atomic draw guard** so the ticker and a concurrent read can't double-draw: a conditional
+     update (`SET drawn_at = now() WHERE id = ? AND status = 'open' AND drawn_at IS NULL`) elects
+     exactly one caller to perform the draw; everyone else no-ops.
+   - A `dropTiming(drop)` helper returning `{ phase, opensAt, closesAt, secondsUntilOpen,
+     secondsUntilClose }` for the UI (M12).
+2. **Lazy trigger (on read):** call `applyDueTransitions()` at the top of `listDrops()` and the
+   single-drop read behind `/api/drops/:id/entry-status`, so any page load or poll reflects the
+   true current state.
+3. **Autonomous trigger (background ticker):** add `instrumentation.ts` at the repo root exporting
+   `register()` (Next 16's canonical server-startup hook — see
+   `node_modules/next/dist/docs/.../instrumentation.md`). It dynamically imports a **nodejs-runtime-
+   only** ticker module that `setInterval(~5s)`s `applyDueTransitions()`. Singleton-guarded against
+   double-registration; errors are logged, never thrown (must never crash the server or run at
+   build time). **This is what makes "wait 2h with the tab closed and it still fires" literally
+   true.** Record the honest scope note: the ticker runs inside the single Railway web service —
+   genuinely autonomous for this one-instance demo, not a distributed scheduler.
+
+**Verification steps**
+- A drop with `opens_at` in the past and status `coming_soon` becomes `open` on the next read,
+  with no admin call.
+- A drop with `closes_at` in the past and status `open` becomes `closed` with a winner/losers on
+  the next read, with no admin call.
+- Server logs show the ticker firing on an interval; after a deadline passes, a plain
+  `GET /api/drops` (no other action) reflects the drawn state.
+- `pnpm typecheck` and `env -u DATABASE_URL pnpm build` both pass (the ticker is nodejs-guarded so
+  it never runs at build).
+
+**Acceptance Test** — the **no-intervention gate** (`scripts/m11-acceptance.ts`, self-cleaning on
+throwaway drops so seeded demo state survives): create a drop with `closes_at = now + ~20s` and no
+seed, insert ≥2 real entries (the production web funnel + an agent entry via the live MCP), then
+**sleep past the deadline performing no further action**, and assert: the drop is `closed`, exactly
+`total_slots` winners + the rest losers, and a winner purchase settles a **real on-chain USDC tx on
+chain 4801** (verified by receipt). Separately, a `coming_soon` drop with `opens_at` in the past
+auto-opens with zero admin calls.
+
+**Exit Criteria**
+- [ ] `coming_soon → open` fires automatically at `opens_at` (lazy + ticker).
+- [ ] `open → closed` + real CSPRNG draw fires automatically at `closes_at`; no double-draw under
+  concurrency.
+- [ ] The no-intervention acceptance passes with a real settlement tx; build + typecheck green;
+  deployed and the live ticker confirmed.
+
+---
+
+### M12 — Timer UI + SOLD OUT state + dedicated winner page
+**Depends on:** M11.
+**Goal:** The countdowns, the sold-out state, and a standalone winner page are visible and correct,
+all driven by the real M11 state (never faked).
+
+**Build steps**
+1. `components/launch-timer.tsx` (client): a live countdown. Pre-launch shows "LAUNCHES IN 01:28"
+   (and `Hh Mm` for the 2h drop); entry-open shows "ENTRIES CLOSE IN 00:42" beside the entry
+   button. When it crosses a boundary (zero) it calls `router.refresh()` so the real, now-updated
+   server state shows (open, or drawn → SOLD OUT / winner).
+2. `components/item-panel.tsx`: render the launch timer when `coming_soon`, the entry timer when
+   `open`, and a **bold disabled SOLD OUT block** (pop-brutalist, hard shadow) when `closed`/
+   `settled`/drawn. If *this browser's* entry won, surface a "YOU WON → view" link to
+   `/win/[entryId]`. Thread `opens_at`/`closes_at`/`drawn_at` through `drop-deck.tsx`; show small
+   "next drop" timing in `hero-panel.tsx`.
+3. `app/win/[entryId]/page.tsx` (server component) — the screenshottable winner page. States:
+   `won` (YOU WON ✦ + product + finish + "PURCHASE — pay USDC" CTA), `purchased` (PURCHASED ✓ +
+   amount + explorer tx link + hash), `lost`/`expired`/`pending` (honest state + link back),
+   not-found → 404. Reuses `POST /api/drops/:id/purchase`, which resolves the winner's wallet
+   server-side from `entry.wallet_address` (human demo wallet for web entries, the agent's wallet
+   for agent entries) — so it works for **whoever wins**. A small client child handles the purchase
+   click and polls `entry-status`. **Real USDC, real tx.** The inline win state in
+   `world-id-entry.tsx` links to `/win/[entryId]` so both surfaces converge on one page.
+4. Capture a screenshot of `/win/[entryId]` in a `won` state → `docs/screenshots/m12-winner.png`.
+   **Screenshots use nix-provided Chromium** (replacing the M9 apt-`.deb` + `LD_LIBRARY_PATH`
+   hack): `nix build nixpkgs#chromium` yields a fully-linked browser (verified resolvable as
+   `/nix/store/…-chromium-…`); the screenshot script points playwright-core at
+   `${chromium}/bin/chromium` via `executablePath` (resolve with `nix eval --raw
+   nixpkgs#chromium.outPath` or `nix build --print-out-paths`; honor a `CHROMIUM_BIN` override).
+
+**Verification steps**
+- A forced-short-timer drop visibly progresses launch-timer → entry-timer → SOLD OUT in the UI.
+- The winner page renders each state correctly; a `won` entry completes a real purchase from it.
+- The screenshot is captured via nix Chromium (no manual lib extraction).
+
+**Acceptance Test**
+- The `/win/[entryId]` winner page, in a `won` state, completes a **real USDC purchase on chain
+  4801** (tx hash recorded) and then shows `purchased` with an explorer link; a short-timer drop is
+  shown going launch → entry → SOLD OUT driven purely by the M11 engine; the winner-page screenshot
+  (`docs/screenshots/m12-winner.png`, taken with nix Chromium) is committed.
+
+**Exit Criteria**
+- [ ] Launch + entry countdowns shown on the panels/hero, driven by real `opens_at`/`closes_at`.
+- [ ] SOLD OUT state shown once a drop is drawn/closed.
+- [ ] `/win/[entryId]` page works for a human OR agent winner and completes a real purchase.
+- [ ] Winner-page screenshot captured via nix Chromium and committed.
+
+---
+
+### M13 — Live demo tooling + runbook (concise judge run)
+**Depends on:** M12.
+**Goal:** One command sets the real 1:30 / 2h timers; an optional harness lets a presenter rehearse
+the agent side alone; the runbook centers on the **real live flow** (the presenter's phone + real
+agents), not an automated stand-in.
+
+**Build steps**
+1. `scripts/launch-demo.ts` — sets timestamps **only** (the clock does the rest; nothing is opened
+   or drawn by the script):
+   - Mac Mini: `status = open`, `opens_at = now`, `closes_at = now + 90s`, **no seed** (truly
+     random).
+   - GeForce RTX 5090: `status = coming_soon`, `opens_at = now + 2h`, `closes_at = now + 2h +
+     <entry window, default 5m>` — at +2h it really opens, then really draws after its window.
+   - Prints the exact wall-clock open/close times + live URLs. Configurable via
+     `MAC_MINI_SECONDS`, `RTX_HOURS`, `RTX_ENTRY_SECONDS` (rehearse short, run the real thing at
+     1:30 / 2h). Optional **off-by-default** `--seed-human` flag to stage the human web entry as
+     the winner (the M9/M10 seeded-winner mechanism) for a run where the presenter wants a
+     guaranteed win; default honors "truly random."
+2. `scripts/practice-agents.ts` — an **optional solo-rehearsal harness, explicitly NOT used in the
+   live demo** (where the presenter asks the real agents by hand). It has agent1 + agent2 call the
+   **live MCP** `enter_draw(Mac Mini)` with real AgentKit signatures (the `m10-acceptance.ts`
+   pattern), waits for the real `closes_at`, then `check_status` → prints genuine WON/LOST plus the
+   settlement tx/link. Clearly labeled "practice only."
+3. `DEMO_RUNBOOK.md` — rewrite around the real live arc: (Act 1) run `launch-demo.ts` → timers set,
+   Mac Mini open ~90s; (Act 2) **presenter pulls out their phone, scans World ID in World App,
+   enters live**; (Act 3) **presenter asks their real agents** (Claude/ChatGPT with the MCP
+   connector) to enter — show the agent calling `enter_draw` and getting confirmation; (Act 4)
+   everyone watches the **real countdown** hit zero → the server draws itself → winner page /
+   SOLD OUT appear on their own; (Act 5) the winner purchases (presenter in-browser on
+   `/win/[id]`, or the agent via the MCP `purchase` tool) → real USDC tx + explorer link. Include
+   the 2h NVIDIA raffle as the "leave it running, it'll really fire" proof, the practice harness
+   for solo rehearsal, the existing `reset-demo` choreography, and the Track-A qualification
+   mapping.
+
+**Verification steps**
+- `launch-demo.ts` sets the timers and a subsequent no-touch wait resolves the drop on its own
+  (reuses the M11 no-intervention behavior).
+- `practice-agents.ts` runs green against the live MCP (agents enter, the draw fires on the clock,
+  status confirmed).
+- The runbook's live arc is documented end-to-end and is cold-runnable.
+
+**Acceptance Test**
+- After `scripts/launch-demo.ts`, leaving the system untouched, the Mac Mini drop opens (if
+  staged from `coming_soon`) and auto-draws at its real `closes_at` with a real settlement
+  available — no admin/script action between set-up and resolution. `DEMO_RUNBOOK.md` documents the
+  full live flow (phone scan + real agents) and the practice harness runs green.
+
+**Exit Criteria**
+- [ ] `launch-demo.ts` sets real 1:30 (Mac Mini) / 2h (RTX 5090) timers and opens/draws nothing
+  itself.
+- [ ] `practice-agents.ts` exists, is labeled practice-only, and runs green against the live MCP.
+- [ ] `DEMO_RUNBOOK.md` centers on the real live flow; the no-touch resolution is demonstrated.
+
+---
+
 ## 4. Qualification-requirement traceability (keep this satisfied throughout)
 
 | Requirement (Track A) | Where it's satisfied | Proof in demo |
@@ -376,9 +554,23 @@ Each milestone is sized to be completable and verifiable in one or a few loop it
 ---
 
 ## 5. Definition of done (whole project)
-- [ ] M0–M10 acceptance tests all pass, recorded in `PROGRESS.md`.
+- [ ] **M0–M13** acceptance tests all pass, recorded in `PROGRESS.md`.
 - [ ] Live Railway URL runs the full demo and resets cleanly.
 - [ ] At least two real World Chain Sepolia USDC settlement txs captured (one web, one agent).
 - [ ] One-slot-per-human enforced and *demonstrably* blocks duplicates on both surfaces.
 - [ ] `DEMO_RUNBOOK.md` lets a human re-run the demo from cold in <5 min.
 - [ ] No provisioned cloud resource was ever deleted.
+- [ ] **Timers are genuinely time-driven (M11):** a drop set to launch/close at a future time
+  opens and draws on the server's own clock with **no intervention** (proven by the M11
+  no-intervention acceptance — set a deadline, wait, observe the autonomous draw + real on-chain tx).
+- [ ] **Launch + entry countdowns, a SOLD OUT state, and a `/win/[entryId]` winner page (M12)** are
+  live, with the winner page completing a real purchase (human OR agent winner); winner-page
+  screenshot committed.
+- [ ] **Live demo tooling (M13):** `scripts/launch-demo.ts` sets the real 1:30 (Mac Mini) / 2h
+  (RTX 5090) timers and opens/draws nothing itself; `DEMO_RUNBOOK.md` centers on the real live flow
+  (presenter's phone scan + real agents); the optional agent practice harness runs green.
+
+> **Original M0–M10 scope is complete and accepted** (see `PROGRESS.md`). The checklist above is
+> the *full* Definition of Done including the M11–M13 extension — the project is not "done" for the
+> loop's purposes until M11–M13 are ACCEPTED too. Do **not** emit `RALPH-PROJECT-COMPLETE` until
+> every box here is checked.
