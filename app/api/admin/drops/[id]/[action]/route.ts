@@ -63,9 +63,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         return Response.json({ ok: true, drop });
       }
       case "reset-demo": {
-        // System-wide demo reset (M10): re-open the live drop (clear entries/orders/seed) and
-        // flip the coming-soon item back to coming_soon. Resolves the demo drops BY NAME, so the
-        // :id in the path is ignored — the /admin "RESET DEMO" button can call it on any drop id.
+        // System-wide demo reset (M10/M11): re-open every seeded demo drop (Mac Mini + RTX 5090),
+        // clearing entries/orders/seed on each. Resolves the demo drops BY NAME, so the :id in the
+        // path is ignored — the /admin "RESET DEMO" button can call it on any drop id.
         const result = await resetDemo();
         return Response.json({ ok: true, ...result });
       }

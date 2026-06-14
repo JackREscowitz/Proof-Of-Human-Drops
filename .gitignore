@@ -14,6 +14,12 @@ dist/
 # Ralph build-loop runtime logs (not source)
 .ralph/
 
+# Raw 3D / image source working dirs — the app serves the processed assets from
+# public/{models,products,draco}/; these originals are heavy and not referenced by code.
+3dmodels/
+5090/
+macminis/
+
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies

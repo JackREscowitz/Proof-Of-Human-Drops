@@ -126,7 +126,7 @@ export function WorldIdEntry({
         const body = await res.json();
         if (body.status === "won") {
           setState("won");
-          setMessage("You won a slot. Purchase your Mac Mini below.");
+          setMessage("You won a slot. Purchase below.");
         } else if (body.status === "lost") {
           setState("lost");
           setMessage("This drop was drawn — you weren't selected this time.");
