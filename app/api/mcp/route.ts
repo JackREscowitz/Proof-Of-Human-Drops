@@ -48,6 +48,7 @@ import {
   AlreadyPurchasedError,
 } from "@/lib/draw.service";
 import { getDrop } from "@/lib/drops.service";
+import { dropTiming } from "@/lib/lifecycle.service";
 import { getWalletByAddress, getReceiverAddress } from "@/lib/wallets";
 import { InsufficientFundsError } from "@/lib/settlement.service";
 
@@ -71,15 +72,21 @@ function json(v: unknown): string {
 
 // Shape a drop for agent consumption (no internal seed/receiver leakage).
 function publicDrop(d: DropWithVariants) {
+  // Derived SNKRS-phase view so an agent can answer "when does it open / how long left to enter":
+  //   coming_soon → seconds_until_open ("launches in"); open → seconds_until_close ("entries close in").
+  const t = dropTiming(d);
   return {
     id: d.id,
     name: d.name,
     status: d.status,
+    phase: t.phase, // coming_soon | open | closing | drawn
     price_usdc: d.priceUsdc,
     total_slots: d.totalSlots,
     opens_at: d.opensAt,
     closes_at: d.closesAt,
     drawn_at: d.drawnAt,
+    seconds_until_open: t.secondsUntilOpen, // for coming_soon
+    seconds_until_close: t.secondsUntilClose, // for open
     variants: d.variants.map((v) => ({ id: v.id, name: v.name, sku: v.sku })),
   };
 }

@@ -122,6 +122,7 @@ export default async function WinnerPage({
               dropId={drop.id}
               entryId={entry.id}
               priceUsdc={price}
+              purchaseDeadline={entry.purchaseDeadline?.toISOString() ?? null}
             />
           )}
 

@@ -12,21 +12,74 @@
 // If the entry is already `purchased` when the page loads, the server passes the existing
 // tx in and we render the confirmed state immediately (no button).
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type Phase = "ready" | "purchasing" | "purchased" | "error";
+
+// MM:SS formatter for the purchase-window countdown.
+function fmtMMSS(totalSeconds: number): string {
+  const s = Math.max(0, totalSeconds);
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
+
+// Live countdown to the winner's purchase deadline. Ticks every second; turns red under 60s.
+// At zero it refreshes the server component so the page flips to the honest `expired` state.
+function PurchaseCountdown({ deadline }: { deadline: string }) {
+  const router = useRouter();
+  const deadlineMs = new Date(deadline).getTime();
+  const [remaining, setRemaining] = useState<number>(() =>
+    Math.max(0, Math.round((deadlineMs - Date.now()) / 1000)),
+  );
+  const crossedRef = useRef(false);
+
+  useEffect(() => {
+    crossedRef.current = false;
+    const tick = () => {
+      const left = Math.max(0, Math.round((deadlineMs - Date.now()) / 1000));
+      setRemaining(left);
+      if (left <= 0 && !crossedRef.current) {
+        crossedRef.current = true;
+        router.refresh(); // pull the now-expired server state in, once.
+      }
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [deadlineMs, router]);
+
+  const urgent = remaining <= 60;
+  return (
+    <div
+      className={`flex items-baseline gap-3 border-[3px] border-ink px-5 py-3 ${
+        urgent ? "bg-destructive text-white" : "bg-white"
+      }`}
+    >
+      <span className="text-xs font-extrabold uppercase tracking-widest">
+        Buy within
+      </span>
+      <span className="display text-3xl tabular-nums sm:text-4xl">
+        {fmtMMSS(remaining)}
+      </span>
+    </div>
+  );
+}
 
 export default function WinnerPurchase({
   dropId,
   entryId,
   priceUsdc,
+  purchaseDeadline = null,
   initialTxHash = null,
   initialExplorerUrl = null,
 }: {
   dropId: string;
   entryId: string;
   priceUsdc: string;
+  // ISO deadline for the purchase window; null → no countdown shown.
+  purchaseDeadline?: string | null;
   initialTxHash?: string | null;
   initialExplorerUrl?: string | null;
 }) {
@@ -98,6 +151,9 @@ export default function WinnerPurchase({
         One slot reserved for you. Pay {priceUsdc} USDC to claim it — real
         settlement on chain 4801.
       </p>
+      {purchaseDeadline && phase !== "purchasing" && (
+        <PurchaseCountdown deadline={purchaseDeadline} />
+      )}
       <button
         onClick={purchase}
         disabled={phase === "purchasing"}
