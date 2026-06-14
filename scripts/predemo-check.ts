@@ -1,10 +1,11 @@
 // Pre-demo checklist (M10) — prints a GREEN/RED board so you know the live system is demo-ready
 // before standing in front of judges. Checks, against the LIVE Railway URL + chain 4801:
 //   • wallet USDC + ETH balances (the winner wallets must hold ≥ price + gas)
-//   • drop statuses (Mac Mini `open`, Mac Studio `coming_soon`) + Mac Mini is fresh (0 entries)
-//   • the draw seed on Mac Mini (cleared = a clean slate the demo re-stages)
+//   • the two live demo drops exist (Mac Mini + GeForce RTX 5090), each with a World ID v4 action,
+//     and Mac Mini is fresh (0 entries) with a cleared seed — a clean slate the demo re-stages.
+//     (Statuses are NOT asserted here: scripts/launch-demo.ts sets them at demo time — Mac Mini
+//     open + 90s, RTX 5090 coming_soon + 2h. Run launch-demo, then watch the clock do the rest.)
 //   • MCP reachability — `…/api/mcp` advertises the 5 tools
-//   • World ID v4 action present on each demo drop (the Sybil gate is wired)
 //
 // Read-only: no money moves, no state changes. Run:
 //   BASE_URL=https://worldcoinapp-production.up.railway.app \
@@ -73,23 +74,21 @@ async function main() {
     }
   }
 
-  // --- Drop statuses + freshness + action --------------------------------------------------
+  // --- Demo drops exist + have actions + Mac Mini is a fresh slate -------------------------
+  // Statuses are set by scripts/launch-demo.ts at demo time, so we don't assert them here —
+  // we assert the drops EXIST, have a World ID action, and Mac Mini's seed is clear.
   console.log("\nDROPS:");
   let macMiniId: string | undefined;
   try {
     const drops = (await (await fetch(`${BASE_URL}/api/drops`)).json()).drops ?? [];
     const macMini = drops.find((d: any) => d.name === "Mac Mini");
-    const macStudio = drops.find((d: any) => d.name === "Mac Studio");
+    const rtx = drops.find((d: any) => d.name === "GeForce RTX 5090");
     macMiniId = macMini?.id;
 
-    row(macMini?.status === "open", "Mac Mini is OPEN", macMini ? `(status=${macMini.status})` : "(missing!)");
+    row(!!macMini, "Mac Mini drop exists", macMini ? `(status=${macMini.status})` : "(missing!)");
     row(!!macMini?.worldActionId, "Mac Mini has a World ID v4 action", macMini?.worldActionId ?? "");
-    row(
-      macStudio?.status === "coming_soon",
-      "Mac Studio is COMING_SOON",
-      macStudio ? `(status=${macStudio.status})` : "(missing!)",
-    );
-    row(!!macStudio?.worldActionId, "Mac Studio has a World ID v4 action", macStudio?.worldActionId ?? "");
+    row(!!rtx, "GeForce RTX 5090 drop exists", rtx ? `(status=${rtx.status})` : "(missing!)");
+    row(!!rtx?.worldActionId, "GeForce RTX 5090 has a World ID v4 action", rtx?.worldActionId ?? "");
     // Seed should be cleared on Mac Mini for a clean slate (the demo stages it per run).
     row(
       macMini?.drawSeed == null,
