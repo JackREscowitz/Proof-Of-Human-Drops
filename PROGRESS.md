@@ -17,7 +17,8 @@
 - **M7 — MCP server: info + entry tools (AgentKit auth):** ACCEPTED
 - **M8 — MCP purchase tool + e2e agent settlement:** ACCEPTED
 - **M9 — Web purchase UI + pop-brutalist design pass:** ACCEPTED
-- M10 — Demo hardening + reset choreography + dry run: not started
+- **M10 — Demo hardening + reset choreography + dry run:** ACCEPTED
+- **🎉 PROJECT COMPLETE — all M0–M10 accepted; Definition of Done met.**
 
 ---
 
@@ -1084,3 +1085,100 @@ https://www.alchemy.com/faucets/world-chain-sepolia.
   .debs (`apt-get download libnspr4 libnss3` → `dpkg-deb -x` → `LD_LIBRARY_PATH`) since
   `playwright install --with-deps` needs sudo. Still on branch `build/m3-admin-plane` (nothing
   merged to main).
+
+---
+
+## 2026-06-13 — iter-008 — M10 Demo hardening + reset choreography + live dry run ×2
+**Status of M10:** ACCEPTED · **🎉 PROJECT COMPLETE (M0–M10 all accepted, DoD met)**
+
+**Did:** (same branch `build/m3-admin-plane`, continued after M9)
+- **One-button reset choreography.** Added **`resetDemo()`** to `lib/drops.service.ts` — a single
+  call that returns the whole system to "Act 1": resets the live drop (**Mac Mini**) via the
+  existing `resetDrop` (clears its entries+orders, re-opens, clears `drawn_at`), additionally
+  **clears the `draw_seed`** (fresh slate each run), and flips **Mac Studio** back to
+  `coming_soon` if it was opened. Scoped to the seeded demo drops BY NAME — nothing else touched.
+  Wired as the admin action **`reset-demo`** in the `:id/:action` dispatch (the `:id` is ignored;
+  the action resolves the demo drops by name, so the `/admin` button can call it on any id). Added
+  a prominent **⟳ RESET DEMO** button to `app/admin/page.tsx`.
+- **Pre-demo checklist** `scripts/predemo-check.ts` — prints a 🟢/🔴 board (read-only): app+DB
+  health, wallet USDC+ETH (human & agent2 each need ≥$10+gas), Mac Mini `open`/0-entries/seed-clear,
+  Mac Studio `coming_soon`, both drops' World ID v4 action, and MCP reachability (advertises the 5
+  tools). Exits non-zero on any RED. Confirmed it CATCHES a real issue: after the dry run it flagged
+  `human` at 9 USDC (< the $10 next-run threshold) → I rebalanced (see below) → all-green.
+- **`DEMO_RUNBOOK.md`** — the 5-act judge script (pitch, live coordinates, demo wallets, the 5 acts
+  with exact clicks/commands, the seedable-draw staging note, the one-button reset choreography, the
+  full automated rehearsal command, the **3 Track-A qualification-requirement traceability table**,
+  and live-demo first-aid). Cold-runnable in <5 min (DoD).
+- **`scripts/m10-acceptance.ts`** — the full 5-act demo run **TWICE back-to-back on the LIVE Railway
+  URL** with `reset-demo` between, no manual DB surgery. Acts on the **seeded Mac Mini drop** (not
+  throwaways): ACT1 web double-entry block (real `insertWebEntry` funnel + replay → `AlreadyEntered`),
+  ACT2 agent enters via **live MCP** with a real AgentKit signature (+ unsigned → rejected, + replay
+  → Sybil-blocked), ACT3 seeded draw via admin HTTP (seed searched so the web entry sorts first →
+  web wins, agent loses), ACT4 **real USDC purchase** via the live `/purchase` route (+ loser → 403),
+  ACT5 coming-soon `get_drop_info(Mac Studio)` via MCP. Reset → verify open/0-entries/coming_soon →
+  run again. Same M4/M9 caveat: a real World ID *proof* can't be produced headlessly, so the web
+  entry uses the production funnel while draw/purchase/agent-path all go through the **live routes**.
+
+**Commits:** `f007479` (reset-demo action+button, predemo-check, m10-acceptance),
+`de037b5` (DEMO_RUNBOOK.md). Deployed: `railway up --ci --service 9f74a937…` → "Deploy complete";
+newest deployment **`082231c9-86f0-491c-84f9-5219810e9593` SUCCESS**.
+
+**Acceptance test (literal output — TWO clean back-to-back runs on the LIVE Railway URL):**
+```
+M10 acceptance — full demo ×2 on chain 4801
+BASE_URL = https://worldcoinapp-production.up.railway.app
+  [reset] OK ×5  (open / seed-clear / coming_soon / 0 entries)
+== DEMO RUN 1 == ACT1 web dup-block · ACT2 agent MCP enter (+unsigned reject +replay block)
+  · ACT3 seeded draw (web wins, agent loses) · ACT4 real purchase + loser 403 · ACT5 coming-soon MCP
+  RUN 1 tx: 0x4c7ed7bbbf19d1d50925cb3169dbf7c2da37402f467d137718fb826cc87cd17f
+  [reset] OK ×5
+== DEMO RUN 2 == (same arc)
+  RUN 2 tx: 0x0069bf2684db32cbed19544899614fe717df55fd106233a16b0bf76f2a8cf864
+  [reset] OK ×5
+M10_ACCEPTANCE: PASS (0 failures)
+```
+- **Both settlement txs independently verified on-chain** (`getTransactionReceipt`):
+  - RUN1 `0x4c7ed7bb…` → status **success**, block **30423925**, from human `0x14baf4…`, to USDC `0x66145f38…`.
+  - RUN2 `0x0069bf26…` → status **success**, block **30423926**, from human `0x14baf4…`, to USDC `0x66145f38…`.
+  - Explorer: https://sepolia.worldscan.org/tx/0x4c7ed7bbbf19d1d50925cb3169dbf7c2da37402f467d137718fb826cc87cd17f
+    · https://sepolia.worldscan.org/tx/0x0069bf2684db32cbed19544899614fe717df55fd106233a16b0bf76f2a8cf864
+- **Pre-demo checklist:** after the run `human` was 9 USDC → flagged 🔴 → rebalanced agent1→human 25
+  USDC (real tx `0xc91b6da7d2db1face0b65cef935846737f348aa483108226daf32ca2f05634d3`, confirmed) →
+  re-ran → **✅ ALL GREEN — demo-ready** (human 34 / agent2 10 / agent1 76 USDC; Mac Mini open+0
+  entries+seed-clear; Mac Studio coming_soon; MCP 5 tools).
+
+**Deviations from PRD:** none material.
+- M10 acceptance drives the web ENTRY via the production `insertWebEntry` funnel (a real World ID
+  proof is un-headless-able — the documented M4/M9 caveat the PRD allows); the draw, purchase, agent
+  entry, and coming-soon query all go through the **live HTTP/MCP routes** (the exact demo paths).
+- `reset-demo` is a single system-wide action layered on the existing per-drop `resetDrop` (it adds
+  seed-clear + the Mac-Studio flip), rather than a separate top-level route — keeps the admin surface
+  one dispatch.
+
+**Definition of Done (PRD §5) — all checked:**
+- [x] M0–M10 acceptance tests all pass, recorded here.
+- [x] Live Railway URL runs the full demo and resets cleanly (M10: 2 runs back-to-back, reset between).
+- [x] ≥2 real USDC settlement txs (one web, one agent): **web** M9 `0x7b3cdbd…` + M10 `0x4c7ed7bb…`/`0x0069bf26…`;
+      **agent** M8 `0x4fd61725…`. (M5 `0xa87870cf…` was the first money-path proof.)
+- [x] One-slot-per-human enforced & demonstrably blocks duplicates on BOTH surfaces (Act1 web, Act2 agent).
+- [x] `DEMO_RUNBOOK.md` lets a human re-run from cold in <5 min (checklist + ⟳ RESET DEMO + 5 acts).
+- [x] No provisioned cloud resource was ever deleted (additive only; only rows/seed cleared).
+
+**FINAL STATE / NOTES (project complete):**
+- Live URL `https://worldcoinapp-production.up.railway.app` — **demo-ready, all-green.** Mac Mini
+  `c27f512e-…` open (action `drop_c27f512e-…`, $10, 1 slot, 0 entries, seed clear); Mac Studio
+  `aafd0d75-…` coming_soon (action `drop_aafd0d75-…`, $20). MCP at `…/api/mcp` (5 tools).
+- **Demo loop:** `scripts/predemo-check.ts` (green board) → run the 5 acts (DEMO_RUNBOOK.md) → ⟳ RESET
+  DEMO (or `POST …/c27f512e-…/reset-demo`) → repeat. Full auto rehearsal: `scripts/m10-acceptance.ts`.
+- **Wallets now:** human 34 USDC, agent2 10, agent1 76 (receiver), all ~0.0099 ETH gas; secret_keys
+  agent wallet 20 USDC / 0 ETH (can't send — gasless). Top-up faucets if a run drains them: USDC
+  https://faucet.circle.com (Worldchain Sepolia ~20/2h), gas https://www.alchemy.com/faucets/world-chain-sepolia.
+- **Branch:** all of M3–M10 live on **`build/m3-admin-plane`**; nothing merged to `main` yet. If a
+  human wants it on main, open a PR from this branch (the loop never commits straight to main).
+- Reusable IDs: app service `9f74a937-4034-4767-8fd0-67115833c31d`, Postgres
+  `5a9197a2-96c1-44d2-9305-dbbb3204cbc1`, Railway project `c3751ac9-2806-4e9e-83d7-30504b6a059f`
+  (env production `928cd32e-…`). Redeploy: `railway up --ci --service 9f74a937… -m "<msg>"`.
+- ⚠️ Carryover gotchas (still apply if anyone extends this): Next 16 route `params` is a Promise
+  (`await ctx.params`); `@/lib/db` is a lazy proxy; build must pass `env -u DATABASE_URL pnpm build`;
+  Drizzle unique errors on `err.cause.code`; tsconfig ES2017 → `BigInt(0)` not `0n`; Railway Metal
+  builder rejects `# syntax=` / BuildKit cache mounts; tsx scripts need an async `main()`.
