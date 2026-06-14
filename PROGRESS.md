@@ -21,13 +21,14 @@
 - **🎉 ORIGINAL SCOPE COMPLETE — all M0–M10 accepted; Definition of Done met.**
 - **M11 — Real time-driven lifecycle (autonomous open + draw):** ACCEPTED
 - **M12 — Timer UI + SOLD OUT + winner page:** ACCEPTED
-- **M13 — Live demo tooling + runbook (1:30 / 2h launch + practice harness):** NOT STARTED
+- **M13 — Live demo tooling + runbook (1:30 / 2h launch + practice harness):** ACCEPTED
+- **🏁 PROJECT COMPLETE — all M0–M13 accepted; full Definition of Done (incl. M11–M13) met.**
 
 > **Extension milestones added 2026-06-14** (see `PRD.md` §3b). Real, time-driven timers — no
 > smoke and mirrors: set a drop to launch in 1:30 and the server opens + draws on its own clock;
 > the 2h NVIDIA raffle really fires if you wait. World ID scan + agent calls stay LIVE (done by a
-> human in the demo). **The current milestone is the first one above marked NOT STARTED (M11).**
-> Build order is strict: M10 → M11 → M12 → M13.
+> human in the demo). **All M0–M13 are ACCEPTED — the project is done.**
+> Build order was strict: M10 → M11 → M12 → M13.
 
 ---
 
@@ -1450,3 +1451,105 @@ Deployed: `railway up --ci --service 9f74a937…` → "Deploy complete"; newest 
   `err.cause.code`; tsconfig ES2017 → `BigInt(0)` not `0n`; Railway Metal builder rejects `# syntax=`
   / BuildKit cache mounts; tsx scripts need an async `main()`. Branch: **`build/m11-lifecycle`** (off
   main; nothing merged to main yet — M0–M10 are on `build/m3-admin-plane`).
+
+---
+
+## 2026-06-14 — iter-011 — M13 Live demo tooling + runbook (1:30 / 2h launch + practice harness)
+**Status of M13:** ACCEPTED  ·  **🏁 PROJECT COMPLETE (M0–M13 all ACCEPTED).**
+
+**Did:** (new branch `build/m13-demo-tooling` off `build/m11-lifecycle`)
+- **`scripts/launch-demo.ts`** — sets the REAL demo timers and opens/draws NOTHING itself (the M11
+  ticker honors the clock). Mac Mini → `status=open, opens_at=now, closes_at=now+90s, NO seed`
+  (truly random); GeForce RTX 5090 → `status=coming_soon, opens_at=now+2h, closes_at=now+2h+5m`.
+  Env-tunable `MAC_MINI_SECONDS` (def 90) / `RTX_HOURS` (def 2) / `RTX_ENTRY_SECONDS` (def 300);
+  optional **off-by-default `--seed-human`** stages a guaranteed human win (fixed seed) else null
+  seed = CSPRNG. Prints the exact wall-clock open/close times (local + UTC) + live URLs. ✅ It
+  correctly sets the RTX row BACK to `coming_soon` (M11 left both drops open) so the launch timer
+  shows and the +2h auto-open fires.
+- **`scripts/practice-agents.ts`** — OPTIONAL solo-rehearsal harness, explicitly labeled NOT the
+  live demo. agent1+agent2 call the **live MCP** `enter_draw(Mac Mini)` with real AgentKit sigs
+  (reuses the `m10-acceptance.ts` MCP-client + `buildAgentkitHeader` pattern), waits for the real
+  `closes_at` while polling read-only `list_drops` (NEVER calls the admin draw route — the live
+  ticker draws), then `check_status` → prints genuine WON/LOST, and the winner calls the `purchase`
+  MCP tool → real on-chain USDC settlement from its own wallet. Pre-flight requires the drop OPEN
+  with a `closes_at` (errors with a "run launch-demo first" hint otherwise).
+- **`scripts/predemo-check.ts`** — updated for the current two-live-drop reality: asserts Mac Mini
+  + **GeForce RTX 5090** both EXIST and have a World ID v4 action + Mac Mini fresh-slate (0 entries,
+  cleared seed), and **no longer** asserts the stale "Mac Studio coming_soon" status (statuses are
+  set by `launch-demo.ts` at demo time). Health/wallet-balance/MCP checks unchanged.
+- **`DEMO_RUNBOOK.md`** — rewritten around the REAL live arc: Act1 arm timers (`launch-demo.ts`),
+  Act2 presenter scans World ID on their PHONE live, Act3 presenter asks their REAL agents via the
+  MCP connector, Act4 the countdown hits zero and the SERVER draws itself (SOLD OUT / YOU WON appear
+  on their own), Act5 winner pays real USDC (web on `/win/[id]` or agent via MCP `purchase`). Adds
+  the **2h "leave it running" RTX proof**, the practice-harness section (clearly rehearsal-only),
+  the `reset-demo` choreography, the M10 automated-rehearsal pointer, and the Track-A traceability.
+
+**Commit:** `28c32cf` (all four files). **No redeploy needed** — these are local tooling that drive
+the ALREADY-DEPLOYED M11/M12 app (latest live deployment `2adafed8-…` SUCCESS from M12); the scripts
+import existing lib modules and change no app runtime behavior.
+
+**Acceptance test (literal — run against the LIVE Railway URL + chain 4801):**
+- **The M13 no-intervention gate** (launch-demo sets timers → NOTHING touches it → autonomous draw):
+  - `MAC_MINI_SECONDS=45 pnpm exec tsx scripts/launch-demo.ts` set Mac Mini `closes_at =
+    2026-06-14T06:49:27.895Z` (open, no seed) + RTX 5090 `coming_soon, opens_at +2h`.
+  - Placed ONE agent entry via the live MCP, then **slept ~75s making NO admin call and NO
+    transition-triggering read**. Direct DB read AFTER the wait (via `getDrop`, which does NOT
+    trigger transitions): **Mac Mini `status: closed`, `drawnAt: 2026-06-14T06:49:28.721Z`** (~1s
+    after `closes_at` — the **background ticker** drew it), the entry → **`won`**. RTX 5090 stayed
+    `coming_soon` (opens in 2h) — proving launch-demo staged it from coming_soon and the engine
+    honors the future `opens_at`. ⇒ **auto-open + auto-draw at the real clock, zero intervention.**
+- **`scripts/practice-agents.ts` runs green against the live MCP** (full agent arc, real settlement):
+  ```
+  [1] agent1 → ENTERED ; agent2 → ENTERED   (live MCP, real AgentKit sigs)
+  [2] waiting for the real closes_at — the server's ticker draws itself …  drop is now "closed".
+  [3] agent1 → WON ; agent2 → LOST          (truly random, no seed)
+  [4] agent1 WON — ✓ PURCHASED — 10 USDC on chain 4801
+      tx: 0x8bf6a28e25a51be10cfb79382a33ff48f71d72c798c3f29bdd65c1ee81c6e5a4
+  ```
+  Receipt independently verified: `eth_getTransactionReceipt` → `status 0x1` (success), block
+  **30436131**, `from 0x8baf91…754a7` (= agent1's own wallet — the winning agent settled from its
+  registered wallet). Explorer:
+  https://sepolia.worldscan.org/tx/0x8bf6a28e25a51be10cfb79382a33ff48f71d72c798c3f29bdd65c1ee81c6e5a4
+- **`scripts/predemo-check.ts` → ✅ ALL GREEN** (app/db health, human 24 / agent2 10 / agent1 86
+  USDC + gas, both drops exist with World ID actions, Mac Mini fresh-slate 0 entries / seed clear,
+  MCP advertises all 5 tools).
+- **Build/typecheck:** `pnpm typecheck` → exit 0; **`env -u DATABASE_URL pnpm build`** → exit 0,
+  "Compiled successfully" (instrumentation no-ops at build; `/win/[entryId]` in the route list).
+- **Left clean for the demo/next run:** `reset-demo` ran; live `GET /api/drops` → Mac Mini open /
+  RTX 5090 open, both `closesAt=null`, `drawSeed=null`, Mac Mini 0 entries.
+
+**Deviations from PRD:** none material.
+- predemo-check's drop-status assertion was relaxed (existence + action + fresh slate) since
+  `launch-demo.ts` now owns the statuses at demo time — the M10-era "Mac Studio coming_soon" check
+  was stale (the 2nd drop is now the live GeForce RTX 5090). Obviously correct given M11/M12.
+- `--seed-human` sets a fixed seed; with the usual "human enters first / is the sole real entrant"
+  flow that guarantees the win. If multiple entrants exist before the draw, a fixed seed makes the
+  draw deterministic but not necessarily the human (matches how the M6/M10 seeded mechanism works —
+  the runbook notes "make the intended winner the first/sole real entrant").
+
+**Definition of Done (PRD §5) — all boxes now satisfied:**
+- M0–M13 acceptance tests all pass + recorded here. ✅
+- Live Railway URL runs the full demo + resets cleanly (M10 + M13 reset-demo). ✅
+- ≥2 real World Chain Sepolia USDC settlement txs captured — many across M5/M6/M8/M9/M10/M11/M12,
+  plus this M13 agent settlement (one web, one agent both well covered). ✅
+- One-slot-per-human enforced + demonstrably blocks dupes on both surfaces (M4 web / M7 agent). ✅
+- `DEMO_RUNBOOK.md` lets a human re-run from cold in <5 min (checklist → launch-demo → 5 acts). ✅
+- No provisioned cloud resource ever deleted (only rows/state cleared). ✅
+- Timers genuinely time-driven (M11) — proven again by the M13 no-intervention gate above. ✅
+- Launch + entry countdowns, SOLD OUT, `/win/[entryId]` winner page live with real purchase (M12);
+  winner-page screenshot committed (`docs/screenshots/m12-winner.png`). ✅
+- Live demo tooling (M13): `launch-demo.ts` sets the 1:30/2h timers and opens/draws nothing itself;
+  `DEMO_RUNBOOK.md` centers on the real live flow; `practice-agents.ts` runs green. ✅
+
+**NOTES FOR NEXT ITERATION:** **None — the project is COMPLETE.** Every milestone M0–M13 is ACCEPTED
+and the full Definition of Done is met. No work remains for the loop. (If a human wants to merge:
+nothing is on `main` yet — M0–M10 live on `build/m3-admin-plane`, M11/M12 on `build/m11-lifecycle`,
+M13 on `build/m13-demo-tooling` which is stacked on m11-lifecycle. The live Railway deployment
+already serves the full M0–M13 app.)
+- **Demo-day quickstart:** `predemo-check.ts` (all-green) → `launch-demo.ts` → narrate the 5 acts in
+  `DEMO_RUNBOOK.md`. Solo rehearsal of the agent side: `practice-agents.ts` (after a short
+  `MAC_MINI_SECONDS` launch-demo). Reset between runs: Admin **⟳ RESET DEMO** or the reset-demo curl.
+- **Reusable IDs unchanged:** app service `9f74a937-4034-4767-8fd0-67115833c31d`, Postgres
+  `5a9197a2-96c1-44d2-9305-dbbb3204cbc1`, live `https://worldcoinapp-production.up.railway.app`. Mac
+  Mini `c27f512e-…` ($10, action `drop_c27f512e-…`); GeForce RTX 5090 `aafd0d75-…` ($50, action
+  `drop_aafd0d75-…`). ADMIN_SECRET + WORLD_* + DEMO_* on Railway.
