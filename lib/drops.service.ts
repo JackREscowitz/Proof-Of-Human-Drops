@@ -297,6 +297,52 @@ export async function resetDemo(opts: {
   return { live, others, comingSoon: null };
 }
 
+// Re-stage demo drops at EXPLICIT per-drop launch offsets (seconds from now), instead of the
+// fixed LAUNCH_OFFSETS used by resetDemo/seed. Same choreography as resetDemo's restage: wipe
+// entries/orders + drawn_at, clear the seed, set coming_soon with opens_at = now + offset and
+// closes_at = opens_at + entry window. The lifecycle ticker then runs the whole SNKRS flow on
+// the server clock. `now` is captured once so all drops are relative to the same instant.
+// Returns one result per plan item that actually exists (missing drops are reported separately).
+export interface StagePlanItem {
+  name: string;
+  launchOffsetSeconds: number;
+}
+export interface StagedDropResult {
+  name: string;
+  opensAt: Date;
+  closesAt: Date;
+  launchOffsetSeconds: number;
+}
+export async function stageDropsByOffset(
+  plan: StagePlanItem[],
+): Promise<{ staged: StagedDropResult[]; missing: string[] }> {
+  const now = Date.now();
+  const staged: StagedDropResult[] = [];
+  const missing: string[] = [];
+
+  for (const { name, launchOffsetSeconds } of plan) {
+    const drop = await findDropByName(name);
+    if (!drop) {
+      missing.push(name);
+      continue;
+    }
+    const opensAt = new Date(now + launchOffsetSeconds * 1000);
+    const closesAt = new Date(opensAt.getTime() + ENTRY_WINDOW_SECONDS * 1000);
+
+    // reopen:false → resetDrop only clears data; we set the coming_soon staging ourselves.
+    await resetDrop(drop.id, { reopen: false });
+    await setSeed(drop.id, null);
+    await db
+      .update(drops)
+      .set({ status: "coming_soon", opensAt, closesAt, drawnAt: null })
+      .where(eq(drops.id, drop.id));
+
+    staged.push({ name, opensAt, closesAt, launchOffsetSeconds });
+  }
+
+  return { staged, missing };
+}
+
 // Flip a coming_soon item to open (or back). Used for the demo "second item" reveal.
 export async function flipComingSoon(dropId: string): Promise<Drop> {
   const drop = await getDropOrThrow(dropId);
