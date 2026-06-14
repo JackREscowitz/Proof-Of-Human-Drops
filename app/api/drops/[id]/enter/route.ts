@@ -1,11 +1,18 @@
-// POST /api/drops/:id/enter (M4) — the web entry path. Verifies a World ID v4 proof
-// against the managed RP, then funnels the verified nullifier through the per-drop
-// UNIQUE(drop_id, human_key) dedupe. This is the core Sybil guarantee on the web.
+// POST /api/drops/:id/enter (M4) — the web entry path. Funnels a verified human through the
+// per-drop UNIQUE(drop_id, human_key) dedupe. This is the core Sybil guarantee on the web.
 //
-// Body: { idkitResult: IDKitResult, variantId?: string }
+// TWO ways to be a "verified human" here:
+//   1. SESSION (preferred — "sign in once, then 1-tap join"): the visitor signed in with
+//      World ID earlier (POST /api/auth/signin) and carries a session cookie. We reuse the
+//      session's stored nullifier as the human key — NO re-scan, no body needed.
+//   2. PROOF (back-compat / no session): the body carries a fresh IDKitResult for THIS
+//      drop's action; we verify it live and use that nullifier.
+//
+// Body: { idkitResult?: IDKitResult, variantId?: string }   (idkitResult optional if signed in)
 // Returns:
 //   201 { ok: true, entry }                              — first entry for this human
 //   200 { ok: true, alreadyEntered: true }               — replay of the same human
+//   401 { error }                                        — not signed in AND no proof supplied
 //   422 { error } / 400 / 404 / 409                       — bad proof / wrong drop / state
 import { NextRequest } from "next/server";
 import { getDrop } from "@/lib/drops.service";
@@ -16,6 +23,7 @@ import {
 } from "@/lib/worldid.service";
 import { insertWebEntry, AlreadyEnteredError } from "@/lib/entries.service";
 import { getWallet } from "@/lib/wallets";
+import { getSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -50,14 +58,13 @@ function verificationLvlOf(result: unknown): "orb" | "device" | null {
 export async function POST(req: NextRequest, ctx: Ctx) {
   const { id } = await ctx.params;
 
-  let body: { idkitResult?: unknown; variantId?: string };
+  // Body is optional when signed in (1-tap join). Tolerate an empty/missing body.
+  let body: { idkitResult?: unknown; variantId?: string } = {};
   try {
-    body = (await req.json()) as { idkitResult?: unknown; variantId?: string };
+    const parsed = (await req.json()) as { idkitResult?: unknown; variantId?: string };
+    if (parsed && typeof parsed === "object") body = parsed;
   } catch {
-    return Response.json({ error: "invalid JSON body" }, { status: 400 });
-  }
-  if (!body.idkitResult) {
-    return Response.json({ error: "idkitResult required" }, { status: 400 });
+    // no/invalid body — fine if the visitor is signed in
   }
 
   const drop = await getDrop(id);
@@ -72,33 +79,49 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     );
   }
 
-  // Bind the proof to THIS drop: the proof's action must equal the drop's action.
-  // (Action scoping is what makes "one slot per drop" work while letting a human enter
-  // other drops — PRD M4.) Without this check a proof minted for drop A could be posted
-  // to drop B's enter route.
-  const proofAction = actionOf(body.idkitResult);
-  if (proofAction && proofAction !== drop.worldActionId) {
-    return Response.json(
-      { error: "proof action does not match this drop" },
-      { status: 422 },
-    );
-  }
-
-  // 1) Verify the proof against the World ID v4 managed RP.
+  // Resolve the verified human key by one of two paths.
   let nullifier: string;
-  try {
-    const result = await verifyV4Proof(body.idkitResult);
-    nullifier = nullifierFromResult(result);
-  } catch (err) {
-    if (err instanceof WorldIdVerifyError) {
-      console.warn(`[drops/${id}/enter] verify failed:`, err.message, err.body);
+  let verificationLvl: "orb" | "device" | null = null;
+
+  const session = await getSession();
+  if (session) {
+    // Path 1 — signed in once with World ID. Reuse the session's human key (the nullifier
+    // from the `signin` action). Same key across drops → UNIQUE(drop_id, human_key) still
+    // gives one entry per human per drop, with no re-scan.
+    nullifier = session.humanKey;
+    verificationLvl = session.verificationLvl;
+  } else if (body.idkitResult) {
+    // Path 2 — no session: verify a fresh proof for THIS drop's action (back-compat).
+    // Bind the proof to THIS drop: the proof's action must equal the drop's action so a
+    // proof minted for drop A can't be posted to drop B's enter route.
+    const proofAction = actionOf(body.idkitResult);
+    if (proofAction && proofAction !== drop.worldActionId) {
       return Response.json(
-        { error: "World ID verification failed", detail: err.message },
+        { error: "proof action does not match this drop" },
         { status: 422 },
       );
     }
-    console.error(`[drops/${id}/enter] verify error:`, err);
-    return Response.json({ error: "verification error" }, { status: 500 });
+    try {
+      const result = await verifyV4Proof(body.idkitResult);
+      nullifier = nullifierFromResult(result);
+      verificationLvl = verificationLvlOf(body.idkitResult);
+    } catch (err) {
+      if (err instanceof WorldIdVerifyError) {
+        console.warn(`[drops/${id}/enter] verify failed:`, err.message, err.body);
+        return Response.json(
+          { error: "World ID verification failed", detail: err.message },
+          { status: 422 },
+        );
+      }
+      console.error(`[drops/${id}/enter] verify error:`, err);
+      return Response.json({ error: "verification error" }, { status: 500 });
+    }
+  } else {
+    // Neither signed in nor a proof supplied.
+    return Response.json(
+      { error: "sign in with World ID first" },
+      { status: 401 },
+    );
   }
 
   // For the demo, a verified web human settles their winning purchase from the "human"
@@ -119,7 +142,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       dropId: id,
       nullifier,
       variantId: body.variantId ?? null,
-      verificationLvl: verificationLvlOf(body.idkitResult),
+      verificationLvl,
       walletAddress: humanWalletAddress,
     });
     return Response.json({ ok: true, entry }, { status: 201 });

@@ -19,6 +19,7 @@ import {
   type IDKitResult,
   type RpContext,
 } from "@worldcoin/idkit";
+import { useSession } from "@/components/session-provider";
 
 type EntryState =
   | "idle"
@@ -51,6 +52,7 @@ export function WorldIdEntry({
   variantId?: string | null;
   disabled?: boolean;
 }) {
+  const { signedIn } = useSession();
   const [state, setState] = useState<EntryState>("idle");
   const [message, setMessage] = useState<string>("");
   const [open, setOpen] = useState(false);
@@ -59,6 +61,43 @@ export function WorldIdEntry({
   const [txHash, setTxHash] = useState<string | null>(null);
   const [explorerUrl, setExplorerUrl] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Apply an /enter response to component state (shared by the 1-tap join and the proof flow).
+  const applyEntryResponse = useCallback(
+    (ok: boolean, body: { alreadyEntered?: boolean; entry?: { id?: string }; detail?: string; error?: string }, status: number) => {
+      if (!ok) {
+        throw new Error(body.detail || body.error || `entry failed (${status})`);
+      }
+      if (body.alreadyEntered) {
+        setState("already-entered");
+        setMessage("You're already entered in this drop.");
+      } else {
+        setEntryId(body.entry?.id ?? null);
+        setState("entered");
+        setMessage("You're in! One slot reserved for this verified human.");
+      }
+    },
+    [],
+  );
+
+  // 1-tap join: the visitor is already signed in with World ID, so enter with NO re-scan.
+  // The server reads the session cookie and reuses the signed-in human key.
+  const joinWithSession = useCallback(async () => {
+    setState("submitting");
+    setMessage("");
+    try {
+      const res = await fetch(`/api/drops/${dropId}/enter`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ variantId: variantId ?? undefined }),
+      });
+      const body = await res.json().catch(() => ({}));
+      applyEntryResponse(res.ok, body, res.status);
+    } catch (err) {
+      setState("error");
+      setMessage(err instanceof Error ? err.message : "entry failed");
+    }
+  }, [dropId, variantId, applyEntryResponse]);
 
   // Step 1: ask the backend for a signed rp_context, then open the widget.
   const begin = useCallback(async () => {
@@ -84,7 +123,8 @@ export function WorldIdEntry({
     }
   }, [dropId]);
 
-  // Step 3: the widget produced a proof — verify + record it server-side.
+  // Step 3 (fallback proof path, used only when NOT signed in): the widget produced a proof
+  // — verify + record it server-side.
   const submitProof = useCallback(
     async (result: IDKitResult) => {
       setState("submitting");
@@ -95,23 +135,13 @@ export function WorldIdEntry({
           body: JSON.stringify({ idkitResult: result, variantId: variantId ?? undefined }),
         });
         const body = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(body.detail || body.error || `entry failed (${res.status})`);
-        }
-        if (body.alreadyEntered) {
-          setState("already-entered");
-          setMessage("You're already entered in this drop.");
-        } else {
-          setEntryId(body.entry?.id ?? null);
-          setState("entered");
-          setMessage("You're in! One slot reserved for this verified human.");
-        }
+        applyEntryResponse(res.ok, body, res.status);
       } catch (err) {
         setState("error");
         setMessage(err instanceof Error ? err.message : "entry failed");
       }
     },
-    [dropId, variantId],
+    [dropId, variantId, applyEntryResponse],
   );
 
   // Step 4: once we hold an entry id and are pending, poll the draw result.
@@ -259,6 +289,38 @@ export function WorldIdEntry({
     );
   }
 
+  // Signed in once with World ID → joining is a single tap (no re-scan).
+  if (signedIn) {
+    return (
+      <div className="flex flex-col gap-3">
+        <button
+          onClick={joinWithSession}
+          disabled={disabled || state === "submitting"}
+          data-state={state}
+          className="inline-flex items-center justify-center gap-2 border-[3px] border-ink bg-lime px-7 py-4 text-lg font-extrabold uppercase text-ink brutal-hover disabled:opacity-60"
+        >
+          {state === "submitting" ? "Joining…" : "Join raffle — one tap"}
+        </button>
+        <p className="text-xs font-medium text-muted-foreground">
+          You&apos;re verified — no need to scan again. One slot per human is still enforced.
+        </p>
+        {message && (
+          <p
+            className={
+              state === "error"
+                ? "text-sm font-bold text-destructive"
+                : "text-sm font-medium text-muted-foreground"
+            }
+          >
+            {message}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  // Not signed in → prompt to sign in once (the inline scan still works as a fallback and
+  // also establishes the session for the rest of the visit).
   return (
     <div className="flex flex-col gap-3">
       <button
@@ -275,6 +337,11 @@ export function WorldIdEntry({
               ? "Recording entry…"
               : "Verify with World ID to enter"}
       </button>
+
+      <p className="text-xs font-medium text-muted-foreground">
+        Tip: use <span className="font-extrabold">Sign in with World ID</span> at the top once
+        — then every drop is a one-tap join.
+      </p>
 
       {message && (
         <p

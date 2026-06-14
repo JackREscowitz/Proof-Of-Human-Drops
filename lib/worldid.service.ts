@@ -43,6 +43,14 @@ export function getAppId(): string {
 
 const VERIFY_BASE = "https://developer.world.org/api/v4/verify";
 
+// The single global "Sign in with World ID" action. The user verifies against THIS once;
+// the resulting nullifier is their stable human key, cached in a session cookie and reused
+// as entries.human_key on every later raffle join (no re-scan). `signRequest` signs an
+// arbitrary action string locally with the RP key — this action does NOT need to be
+// registered in the developer portal for verify to work (it checks the nullifier against
+// the (rp_id, action) pair). See memory: worldid-signin-once-session-model.
+export const SIGNIN_ACTION = "signin";
+
 // ---- rp_context minting ---------------------------------------------------
 // Returns the object the browser hands to the IDKit widget. `signRequest` builds the
 // signed message (version || nonce || createdAt || expiresAt || action) over the RP key.
