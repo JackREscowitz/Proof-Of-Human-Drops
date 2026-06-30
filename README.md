@@ -4,8 +4,6 @@
 
 A bot-proof scarce-goods drop platform. When a Mac Mini sells out in seconds because bots sweep every drop, the problem is not inventory — it is verification. Proof-of-Human Drops enforces **one raffle entry per verified human per drop**, whether that human enters themselves or delegates to their AI agent.
 
-**[Live Demo](https://worldcoinapp-production.up.railway.app)**
-
 ![Hero](docs/screenshots/deck-0-hero.png)
 
 ---
